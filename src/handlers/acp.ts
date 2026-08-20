@@ -1,4 +1,4 @@
-import type { JsonValue } from "../../vendor/plugin-sdk/mod.ts";
+import type { JsonValue } from "@ora-space/plugin-sdk";
 import type { OpenCodeClient } from "../services/opencode-client.ts";
 
 /**

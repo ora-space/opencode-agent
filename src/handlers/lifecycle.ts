@@ -1,5 +1,5 @@
-import type { AgentStartContext } from "../../vendor/plugin-sdk/mod.ts";
-import { PluginMethodError } from "../../vendor/plugin-sdk/mod.ts";
+import type { AgentStartContext } from "@ora-space/plugin-sdk";
+import { PluginMethodError } from "@ora-space/plugin-sdk";
 import type { OpenCodeClient } from "../services/opencode-client.ts";
 
 /** The JSON-RPC code for a request the plugin refuses because its parameters are unusable. */

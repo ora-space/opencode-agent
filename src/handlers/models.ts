@@ -1,4 +1,4 @@
-import type { AgentModel } from "../../vendor/plugin-sdk/mod.ts";
+import type { AgentModel } from "@ora-space/plugin-sdk";
 import { tryEachCandidate } from "../services/command.ts";
 
 /** Reads the raw model id list from OpenCode; injectable so the cache can be exercised. */

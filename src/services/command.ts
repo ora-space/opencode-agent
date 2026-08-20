@@ -1,7 +1,7 @@
 import {
   AGENT_NOT_INSTALLED,
   PluginMethodError,
-} from "../../vendor/plugin-sdk/mod.ts";
+} from "@ora-space/plugin-sdk";
 
 /** Names one concrete way to launch the OpenCode CLI. */
 export interface OpenCodeCommand {

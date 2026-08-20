@@ -4,7 +4,7 @@ import {
   type AgentStartContext,
   defineAgent,
   type JsonValue,
-} from "../../vendor/plugin-sdk/mod.ts";
+} from "@ora-space/plugin-sdk";
 
 /**
  * Carries the process-level facts a plugin instance may need outside any agent session.

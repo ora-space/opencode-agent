@@ -74,15 +74,16 @@ src/
     opencode-client.ts    spawns and owns `opencode acp`, both stdio pumps
     command.ts            binary resolution, spawn candidates, not-found mapping
     ndjson.ts             NDJSON line codec for the CLI's stdio
-vendor/plugin-sdk/        pinned copy of @ora-space/plugin-sdk 0.1.3
 tests/host-simulator.ts   drives this plugin the way the Ora host does
 ```
 
-`vendor/plugin-sdk` is vendored rather than imported by specifier because Ora
-launches the plugin with `deno run --no-prompt` and no import map: every module
-the plugin loads must resolve from inside the package with no network access.
-Refresh it from `packages/plugin-sdk/src` in the Ora repository when the SDK
-changes.
+Every module imports `@ora-space/plugin-sdk` as a fully qualified
+`jsr:@ora-space/plugin-sdk@0.1.3` specifier rather than a bare one, because Ora
+launches the plugin with `deno run --no-prompt` and no import map: a bare
+specifier would have nothing to resolve it against. A `jsr:` specifier needs no
+import map — Deno resolves it directly against the JSR registry and caches it
+locally — so this still works under Ora's launch flags. Bump the pinned version
+in every import together when the SDK changes.
 
 ## Requirements
 

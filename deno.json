@@ -7,7 +7,8 @@
     "lint": "deno lint src vendor tests",
     "format": "deno fmt src vendor tests deno.json package.json README.md",
     "simulate": "deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts",
-    "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts"
+    "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts",
+    "build": "deno bundle src/main.ts -o dist/main.js"
   },
   "compilerOptions": {
     "strict": true,

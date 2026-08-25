@@ -1,8 +1,9 @@
 resolver = 1
-name = "ora-space.opencode"
+title = "OpenCode"
+identifier = "ora-space.opencode"
 namespace = "official"
 kind = "agent"
-version = "0.1.2"
+version = "0.1.3"
 description = "Ora Space OpenCode Agent"
 homepage = "https://github.com/ora-space/opencode-agent"
 license = "Apache-2.0"

@@ -27,7 +27,7 @@ jobs:
       - name: Package .orax archive
         run: |
           set -euo pipefail
-          NAME=$(grep -m1 '^name' orax.toml | sed -E 's/^name *= *"(.*)"/\1/')
+          NAME=$(grep -m1 '^identifier *=' orax.toml | sed -E 's/^identifier *= *"(.*)"/\1/')
           FILE="${NAME}-${GITHUB_REF_NAME}.orax"
           zip -j "$FILE" orax.toml dist/main.js logo.svg README.md
           echo "ORAX_FILE=$FILE" >> "$GITHUB_ENV"

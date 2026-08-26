@@ -116,9 +116,14 @@ export class OpenCodeClient {
     void this.#pumpStdout(process);
     void this.#pumpStderr(process);
     void process.exited.then(() => {
-      if (this.#running?.process === process) {
-        this.#running = undefined;
+      // A process that is no longer `#running` was already superseded by a later `start()` (an
+      // Effect restart, for instance); its death is old news, not a live agent going away, so it
+      // must never clear the new process's tracking or fire `onExited` regardless of the shared
+      // `#expectedExit` flag, which by then reflects the newer generation's intent, not this one's.
+      if (this.#running?.process !== process) {
+        return;
       }
+      this.#running = undefined;
       if (!this.#expectedExit) {
         console.warn("opencode acp exited unexpectedly");
         this.#onExited();

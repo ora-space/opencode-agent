@@ -120,6 +120,14 @@ const register = await waitFor(
 );
 console.log(`ok: register ${JSON.stringify(register.params)}`);
 
+const effectSurfaces =
+  (register.params as { effectSurfaces?: unknown[] } | undefined)
+    ?.effectSurfaces ?? [];
+if (effectSurfaces.length === 0) {
+  throw new Error("registration did not declare any Effect surface");
+}
+console.log(`ok: effectSurfaces ${JSON.stringify(effectSurfaces)}`);
+
 await send({
   jsonrpc: "2.0",
   id: 1,
@@ -187,8 +195,74 @@ console.log(
   }`,
 );
 
-await send({ jsonrpc: "2.0", id: 3, method: "agent/stop", params: {} });
-await waitFor((message) => message.id === 3, "agent/stop");
+const surface = effectSurfaces[0] as {
+  workspaceRelativePath: string;
+  materializationFormat: string;
+  coordination: string;
+};
+const effectParams = {
+  surfaceKey: "sim-surface",
+  workspaceRoot: Deno.cwd(),
+  relativePath: surface.workspaceRelativePath,
+};
+
+await send({
+  jsonrpc: "2.0",
+  id: 3,
+  method: "effect/waitForIdle",
+  params: effectParams,
+});
+const idle = await waitFor(
+  (message) => message.id === 3,
+  "effect/waitForIdle",
+);
+const idleState = (idle.result as { state?: string } | undefined)?.state;
+if (idleState !== "ready") {
+  throw new Error(`expected waitForIdle to report ready, got ${idleState}`);
+}
+console.log("ok: effect/waitForIdle (no turn in flight) -> ready");
+
+await send({
+  jsonrpc: "2.0",
+  id: 4,
+  method: "effect/restart",
+  params: { ...effectParams, generation: 1 },
+});
+const restarted = await waitFor(
+  (message) => message.id === 4,
+  "effect/restart",
+);
+if (restarted.error !== undefined) {
+  throw new Error(`effect/restart failed: ${JSON.stringify(restarted.error)}`);
+}
+console.log("ok: effect/restart (CLI respawned)");
+
+// The barrier must release a fully working bridge: prove the respawned CLI still answers ACP.
+await send({
+  jsonrpc: "2.0",
+  method: "agent/acp",
+  params: {
+    jsonrpc: "2.0",
+    id: 3,
+    method: "session/new",
+    params: { cwd: Deno.cwd(), mcpServers: [] },
+  },
+});
+const sessionAfterRestart = await waitFor(
+  (message) => message.method === "agent/acp" && acpFrame(message).id === 3,
+  "ACP session/new after restart",
+);
+console.log(
+  `ok: session/new after restart ${
+    JSON.stringify(
+      acpFrame(sessionAfterRestart).result ??
+        acpFrame(sessionAfterRestart).error,
+    ).slice(0, 200)
+  }`,
+);
+
+await send({ jsonrpc: "2.0", id: 5, method: "agent/stop", params: {} });
+await waitFor((message) => message.id === 5, "agent/stop");
 console.log("ok: agent/stop");
 
 await send({ jsonrpc: "2.0", method: "ora/shutdown" });

@@ -70,6 +70,9 @@ async function* decodeFrames(
   }
 }
 
+// The long-lived ACP server is no longer spawned by the plugin itself (this simulator, playing
+// the host, does that instead — see `ora/childprocess/*` below), but `--allow-run` is still
+// needed for the plugin's own one-shot `opencode models` invocation in handlers/models.ts.
 const HOST_PERMISSIONS = [
   "--no-prompt",
   "--allow-run",
@@ -104,11 +107,181 @@ async function waitFor(
       throw new Error(`plugin closed stdout while waiting for ${label}`);
     }
     const message = next.value as Record<string, unknown>;
+    if (isChildProcessRequest(message)) {
+      // The plugin no longer spawns `opencode` itself; it asks this simulator, playing the host,
+      // to do it. Answered off the main wait loop's critical path so a slow spawn cannot desync
+      // reading of unrelated frames arriving concurrently.
+      void handleChildProcessRequest(message).catch((error) => {
+        console.error(`[host] ora/childprocess request failed: ${error}`);
+      });
+      continue;
+    }
     if (match(message)) {
       return message;
     }
     console.log(`[host] << ${JSON.stringify(message).slice(0, 160)}`);
   }
+}
+
+/** One subprocess this simulator, playing the host, spawned on the plugin's behalf. */
+interface SimulatedChildProcess {
+  child: Deno.ChildProcess;
+  stdinWriter: WritableStreamDefaultWriter<Uint8Array>;
+}
+
+const simulatedChildProcesses = new Map<string, SimulatedChildProcess>();
+let nextChildProcessId = 1;
+
+/** Recognizes a plugin-to-host request for `ora/childprocess/*`. */
+function isChildProcessRequest(
+  message: Record<string, unknown>,
+): message is Record<string, unknown> & {
+  id: number | string;
+  method: string;
+} {
+  return typeof message.method === "string" &&
+    message.method.startsWith("ora/childprocess/") &&
+    (typeof message.id === "number" || typeof message.id === "string");
+}
+
+/**
+ * Serves one `ora/childprocess/*` request the same way Ora's real host does: this simulator owns
+ * the real `opencode` process and relays its stdout/stderr/exit back as notifications.
+ */
+async function handleChildProcessRequest(
+  message: Record<string, unknown> & {
+    id: number | string;
+    method: string;
+  },
+): Promise<void> {
+  try {
+    const result = await dispatchChildProcessMethod(
+      message.method,
+      (message.params ?? {}) as Record<string, unknown>,
+    );
+    await send({ jsonrpc: "2.0", id: message.id, result });
+  } catch (error) {
+    await send({
+      jsonrpc: "2.0",
+      id: message.id,
+      error: {
+        code: -32000,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  }
+}
+
+async function dispatchChildProcessMethod(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<JsonValue> {
+  switch (method) {
+    case "ora/childprocess/spawn": {
+      const command = params.command as string;
+      const args = (params.args as string[] | undefined) ?? [];
+      const cwd = (params.cwd as string | null | undefined) ?? undefined;
+      const child = new Deno.Command(command, {
+        args,
+        cwd,
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      const processId = String(nextChildProcessId++);
+      simulatedChildProcesses.set(processId, {
+        child,
+        stdinWriter: child.stdin.getWriter(),
+      });
+      void pumpChildOutput(processId, child.stdout, "ora/childprocess/stdout");
+      void pumpChildOutput(processId, child.stderr, "ora/childprocess/stderr");
+      void child.status.then(async (status) => {
+        simulatedChildProcesses.delete(processId);
+        await notifyHostBestEffort({
+          jsonrpc: "2.0",
+          method: "ora/childprocess/exit",
+          params: { processId, code: status.code, signal: null },
+        });
+      });
+      return { processId, pid: child.pid };
+    }
+    case "ora/childprocess/write": {
+      const process = requireSimulatedProcess(params);
+      await process.stdinWriter.write(
+        base64Decode(params.bytesBase64 as string),
+      );
+      return {};
+    }
+    case "ora/childprocess/closeStdin": {
+      await requireSimulatedProcess(params).stdinWriter.close();
+      return {};
+    }
+    case "ora/childprocess/kill": {
+      requireSimulatedProcess(params).child.kill();
+      return {};
+    }
+    default:
+      throw new Error(`unsupported host method ${method}`);
+  }
+}
+
+function requireSimulatedProcess(
+  params: Record<string, unknown>,
+): SimulatedChildProcess {
+  const processId = params.processId as string;
+  const process = simulatedChildProcesses.get(processId);
+  if (process === undefined) {
+    throw new Error(`unknown processId ${processId}`);
+  }
+  return process;
+}
+
+/** Streams one piped stdio stream as base64-encoded `ora/childprocess/{stdout,stderr}` chunks. */
+async function pumpChildOutput(
+  processId: string,
+  stream: ReadableStream<Uint8Array>,
+  method: string,
+): Promise<void> {
+  for await (const chunk of stream) {
+    await notifyHostBestEffort({
+      jsonrpc: "2.0",
+      method,
+      params: { processId, bytesBase64: base64Encode(chunk) },
+    });
+  }
+}
+
+/**
+ * Sends one notification, swallowing failure exactly as the real host does: `agent/stop` does
+ * not wait for a killed process to finish exiting, so a trailing chunk or the eventual exit
+ * notification can still be in flight after the plugin connection has already closed.
+ */
+async function notifyHostBestEffort(message: JsonValue): Promise<void> {
+  try {
+    await send(message);
+  } catch {
+    // The plugin connection is already gone; there is nothing left to notify.
+  }
+}
+
+/** Encodes bytes as standard base64 without building one giant intermediate string. */
+function base64Encode(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
+}
+
+/** Decodes standard base64 into bytes. */
+function base64Decode(encoded: string): Uint8Array {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 const acpFrame = (message: Record<string, unknown>): Record<string, unknown> =>

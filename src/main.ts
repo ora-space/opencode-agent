@@ -53,6 +53,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   override onActivate(context: PluginContext): void {
     console.info(`${context.pluginId} activated`);
+    this.#client.attachProcesses(context.processes);
   }
 
   override onStart = async (

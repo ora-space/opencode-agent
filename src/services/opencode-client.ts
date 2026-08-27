@@ -1,4 +1,4 @@
-import type { JsonValue } from "@ora-space/plugin-sdk";
+import type { HostProcesses, JsonValue } from "@ora-space/plugin-sdk";
 import { tryEachCandidate } from "./command.ts";
 import { decodeLines, encodeLine } from "./ndjson.ts";
 
@@ -7,13 +7,13 @@ export interface SpawnedProcess {
   stdin: WritableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
-  readonly pid: number;
+  readonly pid: number | undefined;
   kill(): void;
   readonly exited: Promise<void>;
 }
 
 export interface OpenCodeClientOptions {
-  /** Overrides process spawning; injected by tests. */
+  /** Overrides process spawning; injected by tests. Production spawns through `attachProcesses`. */
   spawn?: (command: string, args: string[], cwd: string) => SpawnedProcess;
   /** Receives every ACP frame emitted by the CLI, in output order. */
   onAcpFrame?: (frame: JsonValue) => void;
@@ -39,20 +39,34 @@ export class OpenCodeClient {
     command: string,
     args: string[],
     cwd: string,
-  ) => SpawnedProcess;
+  ) => SpawnedProcess | Promise<SpawnedProcess>;
   readonly #onAcpFrame: (frame: JsonValue) => void;
   readonly #onExited: () => void;
+  /** Supplied by `attachProcesses` once the plugin's `Plugin` instance exists; see `main.ts`. */
+  #processes: HostProcesses | undefined;
   #running: RunningProcess | undefined;
   #expectedExit = false;
 
   constructor(options: OpenCodeClientOptions = {}) {
-    this.#spawn = options.spawn ?? spawnOpenCodeProcess;
+    this.#spawn = options.spawn ??
+      ((command, args, cwd) => this.#spawnViaHost(command, args, cwd));
     this.#onAcpFrame = options.onAcpFrame ?? (() => {});
     this.#onExited = options.onExited ?? (() => {});
   }
 
   get running(): boolean {
     return this.#running !== undefined;
+  }
+
+  /**
+   * Supplies the host-managed process client this plugin spawns `opencode acp` through.
+   *
+   * Called once, from `onActivate`: the `Plugin` instance `createHostProcesses` needs does not
+   * exist yet when this client is constructed as a class field, so production spawning stays
+   * unavailable until this runs. Tests that inject `options.spawn` never need to call it.
+   */
+  attachProcesses(processes: HostProcesses): void {
+    this.#processes = processes;
   }
 
   /**
@@ -65,8 +79,8 @@ export class OpenCodeClient {
     await this.stop();
     this.#expectedExit = false;
 
-    await tryEachCandidate(({ command, extraArgs }) => {
-      const process = this.#spawn(
+    await tryEachCandidate(async ({ command, extraArgs }) => {
+      const process = await this.#spawn(
         command,
         [...extraArgs, "acp", "--cwd", cwd],
         cwd,
@@ -173,27 +187,34 @@ export class OpenCodeClient {
       console.warn(`opencode stderr read failed: ${error}`);
     }
   }
-}
 
-/** Spawns the CLI with all three stdio pipes exposed for streaming. */
-function spawnOpenCodeProcess(
-  command: string,
-  args: string[],
-  cwd: string,
-): SpawnedProcess {
-  const child = new Deno.Command(command, {
-    args,
-    cwd,
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  return {
-    stdin: child.stdin,
-    stdout: child.stdout,
-    stderr: child.stderr,
-    pid: child.pid,
-    kill: () => child.kill(),
-    exited: child.status.then(() => undefined),
-  };
+  /**
+   * Asks the host to spawn and own the CLI process, adapting its `HostChildProcess` handle onto
+   * `SpawnedProcess` so every other method above stays unaware of who owns the OS process.
+   */
+  async #spawnViaHost(
+    command: string,
+    args: string[],
+    cwd: string,
+  ): Promise<SpawnedProcess> {
+    if (this.#processes === undefined) {
+      throw new Error(
+        "OpenCodeClient cannot spawn before attachProcesses() runs",
+      );
+    }
+    const child = await this.#processes.spawn({ command, args, cwd });
+    return {
+      stdin: new WritableStream<Uint8Array>({
+        write: (chunk) => child.write(chunk),
+        close: () => child.closeStdin(),
+      }),
+      stdout: child.stdout,
+      stderr: child.stderr,
+      pid: child.pid,
+      // Best effort: the host already treats kill() as idempotent and tolerant of a process
+      // that is already gone, so a rejection here is nothing callers need to observe.
+      kill: () => void child.kill().catch(() => {}),
+      exited: child.exited.then(() => undefined),
+    };
+  }
 }

@@ -1,5 +1,6 @@
 import {
   AGENT_NOT_INSTALLED,
+  HostRequestError,
   PluginMethodError,
 } from "@ora-space/plugin-sdk";
 
@@ -42,13 +43,16 @@ export function spawnCandidates(command: string): string[] {
   return command === fallback ? [command] : [command, fallback];
 }
 
-/** Classifies a spawn failure as a missing binary, tolerating platform error wording. */
+/**
+ * Classifies a spawn failure as a missing binary.
+ *
+ * The host spawns the process now, so this is the host's own classification
+ * (`program_not_found` means the OS could not resolve the executable) rather than sniffing
+ * platform-specific error text.
+ */
 export function isCommandNotFound(error: unknown): boolean {
-  if (error instanceof Deno.errors.NotFound) {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /not found|cannot find|no such file/i.test(message);
+  return error instanceof HostRequestError &&
+    error.kind === "program_not_found";
 }
 
 /**

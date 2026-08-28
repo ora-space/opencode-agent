@@ -4,7 +4,7 @@
   "exports": "./src/main.ts",
   "minimumDependencyAge": 0,
   "imports": {
-    "@ora-space/plugin-sdk": "../../desktop/packages/plugin-sdk/src/mod.ts"
+    "@ora-space/plugin-sdk": "jsr:@ora-space/plugin-sdk@0.4.0"
   },
   "tasks": {
     "check": "deno check src/main.ts tests/host-simulator.ts",

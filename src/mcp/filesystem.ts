@@ -9,7 +9,8 @@ export interface MaterializationFileSystem {
   ): Promise<void>;
   read(path: string): Promise<Uint8Array | undefined>;
   ensureDirectory(path: string): Promise<void>;
-  createStagingFile(targetPath: string, bytes: Uint8Array): Promise<string>;
+  createStagingFile(targetPath: string): Promise<string>;
+  writeStagingFile(stagingPath: string, bytes: Uint8Array): Promise<void>;
   removeFile(path: string): Promise<void>;
   cleanup(path: string): Promise<void>;
 }
@@ -27,6 +28,7 @@ export interface AtomicReplacer {
 /** Production Deno filesystem implementation with exclusive same-directory staging files. */
 export class DenoMaterializationFileSystem
   implements MaterializationFileSystem {
+  /** Rejects link redirection before any managed-path read can be mistaken for owned state. */
   async assertSafeManagedPaths(
     directoryPath: string,
     targetPath: string,
@@ -63,10 +65,8 @@ export class DenoMaterializationFileSystem
     await Deno.mkdir(path, { recursive: true, mode: 0o700 });
   }
 
-  async createStagingFile(
-    targetPath: string,
-    bytes: Uint8Array,
-  ): Promise<string> {
+  /** Creates an empty exclusive staging inode so Windows ACLs can be set before plaintext. */
+  async createStagingFile(targetPath: string): Promise<string> {
     const stagingPath = join(
       dirname(targetPath),
       `.opencode.json.ora-${crypto.randomUUID()}.tmp`,
@@ -76,8 +76,25 @@ export class DenoMaterializationFileSystem
       write: true,
       mode: 0o600,
     });
+    file.close();
+    return stagingPath;
+  }
+
+  /** Writes and syncs every desired byte after the caller has restricted the staging inode. */
+  async writeStagingFile(
+    stagingPath: string,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    const file = await Deno.open(stagingPath, { write: true, truncate: true });
     try {
-      await file.write(bytes);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = await file.write(bytes.subarray(offset));
+        if (written === 0) {
+          throw new Error("staging write made no progress");
+        }
+        offset += written;
+      }
       await file.sync();
     } catch (error) {
       file.close();
@@ -85,11 +102,11 @@ export class DenoMaterializationFileSystem
       throw error;
     }
     file.close();
-    return stagingPath;
   }
 
   async removeFile(path: string): Promise<void> {
     await Deno.remove(path);
+    await syncDirectory(dirname(path));
   }
 
   async cleanup(path: string): Promise<void> {
@@ -137,5 +154,20 @@ export class DenoAtomicReplacer implements AtomicReplacer {
     } finally {
       committed.close();
     }
+    await syncDirectory(dirname(targetPath));
+  }
+}
+
+/** Syncs directory metadata where the OS exposes it so rename/delete survives a normal crash. */
+async function syncDirectory(path: string): Promise<void> {
+  if (Deno.build.os === "windows") {
+    // Windows does not expose directory handles through Deno; MoveFileEx is its commit boundary.
+    return;
+  }
+  const directory = await Deno.open(path, { read: true });
+  try {
+    await directory.sync();
+  } finally {
+    directory.close();
   }
 }

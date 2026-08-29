@@ -45,13 +45,14 @@ export class RepositoryLocalGitGuard implements GitWorkspaceGuard {
     this.#run = run;
   }
 
+  /** Completes tracked-path and exact-exclude checks before document staging may begin. */
   async prepare(workspaceRoot: string, managedPath: string): Promise<void> {
     const topLevel = await this.#run(workspaceRoot, [
       "rev-parse",
       "--show-toplevel",
     ]);
     if (!topLevel.success) {
-      if (topLevel.code === 128) {
+      if (topLevel.code === 128 && await gitMarkerIsAbsent(workspaceRoot)) {
         return;
       }
       throw new McpMaterializationError("mcp_config_git_exclude_failed");
@@ -104,6 +105,7 @@ export class RepositoryLocalGitGuard implements GitWorkspaceGuard {
     await this.#ensureExactExclude(excludePath);
   }
 
+  /** Appends one exact line atomically so unrelated repository-local patterns remain byte-stable. */
   async #ensureExactExclude(excludePath: string): Promise<void> {
     try {
       const existing = await this.#fs.read(excludePath) ?? new Uint8Array();
@@ -116,8 +118,9 @@ export class RepositoryLocalGitGuard implements GitWorkspaceGuard {
         `${text}${separator}${MANAGED_EXCLUDE}\n`,
       );
       await this.#fs.ensureDirectory(dirname(excludePath));
-      const staging = await this.#fs.createStagingFile(excludePath, desired);
+      const staging = await this.#fs.createStagingFile(excludePath);
       try {
+        await this.#fs.writeStagingFile(staging, desired);
         await this.#replacer.replace(staging, excludePath);
       } finally {
         await this.#fs.cleanup(staging);
@@ -128,6 +131,19 @@ export class RepositoryLocalGitGuard implements GitWorkspaceGuard {
       }
       throw new McpMaterializationError("mcp_config_git_exclude_failed");
     }
+  }
+}
+
+/** Distinguishes a genuine non-Git Workspace from a broken or unsafe repository checkout. */
+async function gitMarkerIsAbsent(workspaceRoot: string): Promise<boolean> {
+  try {
+    await Deno.lstat(join(workspaceRoot, ".git"));
+    return false;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return true;
+    }
+    throw new McpMaterializationError("mcp_config_git_exclude_failed");
   }
 }
 

@@ -45,6 +45,8 @@ interface PlannedEntry {
   receipt: McpEntryReceipt;
 }
 
+type ManagedDocumentIntent = "replace" | "delete";
+
 /** Dependencies whose failure behavior is significant to the all-or-nothing write contract. */
 export interface McpMaterializerDependencies {
   fileSystem: MaterializationFileSystem;
@@ -81,10 +83,14 @@ export class OpenCodeMcpMaterializer {
     }
   }
 
+  /** Orders proof, preserved-state, Git, ledger, and atomic-write gates before reporting success. */
   async #configureWorkspace(
     request: McpConfigurationSnapshotRequest,
   ): Promise<McpConfigurationReceipt> {
     const plans = await this.#planEntries(request.resolvedMcps);
+    const intent: ManagedDocumentIntent = plans.length === 0
+      ? "delete"
+      : "replace";
     const documentBytes = renderDocument(plans);
     const documentFingerprint = await fingerprintBytes(documentBytes);
     const managedDirectory = join(request.workspaceRoot, ".opencode");
@@ -107,7 +113,7 @@ export class OpenCodeMcpMaterializer {
       state,
       observedFingerprint,
       documentFingerprint,
-      plans.length === 0,
+      intent,
     );
 
     if (plans.length > 0) {
@@ -133,6 +139,7 @@ export class OpenCodeMcpMaterializer {
     }
 
     if (observedFingerprint === documentFingerprint) {
+      await this.#assertObservedUnchanged(targetPath, observedFingerprint);
       await this.#commitState(request.agentTargetId, documentFingerprint);
       return receipt;
     }
@@ -141,7 +148,7 @@ export class OpenCodeMcpMaterializer {
       request,
       state,
       documentFingerprint,
-      false,
+      "replace",
     );
     await this.#dependencies.fileSystem.ensureDirectory(managedDirectory);
     await this.#dependencies.fileSystem.assertSafeManagedPaths(
@@ -150,10 +157,15 @@ export class OpenCodeMcpMaterializer {
     );
     const stagingPath = await this.#dependencies.fileSystem.createStagingFile(
       targetPath,
-      documentBytes,
     );
     try {
+      // Windows ignores create mode, so restrict the empty file before plaintext can inherit ACLs.
       await this.#dependencies.permissions.restrict(stagingPath);
+      await this.#dependencies.fileSystem.writeStagingFile(
+        stagingPath,
+        documentBytes,
+      );
+      await this.#assertObservedUnchanged(targetPath, observedFingerprint);
       await this.#dependencies.atomicReplacer.replace(stagingPath, targetPath);
     } finally {
       await this.#dependencies.fileSystem.cleanup(stagingPath);
@@ -162,6 +174,7 @@ export class OpenCodeMcpMaterializer {
     return receipt;
   }
 
+  /** Plans the entire entry set first so one invalid MCP cannot leave a partially changed file. */
   async #planEntries(
     resolvedMcps: readonly SnapshotResolvedMcp[],
   ): Promise<PlannedEntry[]> {
@@ -191,7 +204,7 @@ export class OpenCodeMcpMaterializer {
         oauth: false,
         headers: Object.fromEntries(
           Object.entries(mcp.transport.headers).sort(([left], [right]) =>
-            left.localeCompare(right)
+            compareCodeUnits(left, right)
           ),
         ),
       };
@@ -211,7 +224,9 @@ export class OpenCodeMcpMaterializer {
         },
       };
     }));
-    plans.sort((left, right) => left.nativeKey.localeCompare(right.nativeKey));
+    plans.sort((left, right) =>
+      compareCodeUnits(left.nativeKey, right.nativeKey)
+    );
     assertNoNativeKeyCollisions(plans);
     if (
       new Set(plans.map((entry) => entry.managedIdentity)).size !==
@@ -223,20 +238,31 @@ export class OpenCodeMcpMaterializer {
     return plans;
   }
 
+  /** Accepts bytes only when an applied ledger or this exact prepared replay proves ownership. */
   #assertOwnership(
     request: McpConfigurationSnapshotRequest,
     state: ManagedDocumentState | undefined,
     observedFingerprint: string | undefined,
     desiredFingerprint: string,
-    deleting: boolean,
+    intent: ManagedDocumentIntent,
   ): void {
+    if (
+      state?.prepared !== undefined &&
+      (
+        state.prepared.operationId !== request.operationId ||
+        state.prepared.desiredFingerprint !== desiredFingerprint ||
+        state.prepared.intent !== intent
+      )
+    ) {
+      throw new McpMaterializationError("mcp_materialization_conflict");
+    }
     const appliedMatches = observedFingerprint !== undefined &&
       state?.applied?.fingerprint === observedFingerprint;
     const preparedMatches =
       state?.prepared?.operationId === request.operationId &&
       state.prepared.desiredFingerprint === desiredFingerprint &&
-      state.prepared.deleting === deleting &&
-      (deleting
+      state.prepared.intent === intent &&
+      (intent === "delete"
         ? observedFingerprint === undefined
         : observedFingerprint === desiredFingerprint);
 
@@ -253,6 +279,7 @@ export class OpenCodeMcpMaterializer {
     }
   }
 
+  /** Blocks ambiguous user-layer merges before Git state or managed bytes are changed. */
   async #assertRootConfigurationPreserved(
     workspaceRoot: string,
     plans: readonly PlannedEntry[],
@@ -285,6 +312,7 @@ export class OpenCodeMcpMaterializer {
     }
   }
 
+  /** Deletes only an owned, fingerprint-verified document while leaving its directory untouched. */
   async #deleteManagedDocument(
     request: McpConfigurationSnapshotRequest,
     state: ManagedDocumentState | undefined,
@@ -300,12 +328,31 @@ export class OpenCodeMcpMaterializer {
       await this.#commitState(request.agentTargetId, undefined);
       return receipt;
     }
-    await this.#prepareState(request, state, desiredFingerprint, true);
+    await this.#prepareState(request, state, desiredFingerprint, "delete");
+    await this.#assertObservedUnchanged(
+      targetPath,
+      await fingerprintBytes(observedBytes),
+    );
     await this.#dependencies.fileSystem.removeFile(targetPath);
     await this.#commitState(request.agentTargetId, undefined);
     return receipt;
   }
 
+  /** Rechecks the last observed fingerprint immediately before return, replace, or deletion. */
+  async #assertObservedUnchanged(
+    targetPath: string,
+    expectedFingerprint: string | undefined,
+  ): Promise<void> {
+    const currentBytes = await this.#dependencies.fileSystem.read(targetPath);
+    const currentFingerprint = currentBytes === undefined
+      ? undefined
+      : await fingerprintBytes(currentBytes);
+    if (currentFingerprint !== expectedFingerprint) {
+      throw new McpMaterializationError("mcp_materialization_conflict");
+    }
+  }
+
+  /** Maps unavailable or malformed ownership state to a safe preserved-state conflict. */
   async #readState(
     agentTargetId: string,
   ): Promise<ManagedDocumentState | undefined> {
@@ -316,11 +363,12 @@ export class OpenCodeMcpMaterializer {
     }
   }
 
+  /** Persists replay evidence before the first plaintext filesystem mutation. */
   async #prepareState(
     request: McpConfigurationSnapshotRequest,
     state: ManagedDocumentState | undefined,
     desiredFingerprint: string,
-    deleting: boolean,
+    intent: ManagedDocumentIntent,
   ): Promise<void> {
     try {
       await this.#dependencies.state.write(request.agentTargetId, {
@@ -329,7 +377,7 @@ export class OpenCodeMcpMaterializer {
           operationId: request.operationId,
           desiredFingerprint,
           previousFingerprint: state?.applied?.fingerprint,
-          deleting,
+          intent,
         },
       });
     } catch {
@@ -337,6 +385,7 @@ export class OpenCodeMcpMaterializer {
     }
   }
 
+  /** Advances applied ownership only after the filesystem side effect has committed. */
   async #commitState(
     agentTargetId: string,
     fingerprint: string | undefined,
@@ -367,6 +416,7 @@ export function createOpenCodeMcpMaterializer(
   });
 }
 
+/** Renders only the target-native fields Ora owns, with a single canonical trailing newline. */
 function renderDocument(plans: readonly PlannedEntry[]): Uint8Array {
   if (plans.length === 0) {
     return new Uint8Array();
@@ -379,6 +429,7 @@ function renderDocument(plans: readonly PlannedEntry[]): Uint8Array {
   );
 }
 
+/** Mirrors every planned entry into the exact full-coverage receipt the Host validates. */
 function receiptFor(
   request: McpConfigurationSnapshotRequest,
   documentFingerprint: string,
@@ -390,6 +441,11 @@ function receiptFor(
     documentFingerprint,
     entries: plans.map((plan) => plan.receipt),
   };
+}
+
+/** Uses locale-independent UTF-16 order so output bytes agree on every host locale. */
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

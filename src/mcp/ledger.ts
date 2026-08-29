@@ -9,7 +9,7 @@ export interface PreparedManagedDocumentOperation {
   operationId: string;
   desiredFingerprint: string;
   previousFingerprint: string | undefined;
-  deleting: boolean;
+  intent: "replace" | "delete";
 }
 
 export interface ManagedDocumentState {
@@ -72,6 +72,7 @@ async function statePath(agentTargetId: string): Promise<string> {
   return `mcp-managed-state/${fingerprint.slice(7)}.json`;
 }
 
+/** Rejects ledger drift so malformed private state can never become proof of file ownership. */
 function parseState(value: unknown): ManagedDocumentState {
   if (!isRecord(value) || value.schemaVersion !== 1) {
     throw new Error("invalid MCP managed-state ledger");
@@ -94,7 +95,7 @@ function parseState(value: unknown): ManagedDocumentState {
         prepared.previousFingerprint !== undefined &&
         !isFingerprint(prepared.previousFingerprint)
       ) ||
-      typeof prepared.deleting !== "boolean"
+      (prepared.intent !== "replace" && prepared.intent !== "delete")
     )
   ) {
     throw new Error("invalid MCP managed-state ledger");

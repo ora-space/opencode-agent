@@ -66,10 +66,11 @@ class NoopPermissions implements PermissionRestrictor {
 
 class RecordingPermissions implements PermissionRestrictor {
   calls = 0;
+  readonly sizesBeforeRestriction: number[] = [];
 
-  restrict(_path: string): Promise<void> {
+  async restrict(path: string): Promise<void> {
     this.calls += 1;
-    return Promise.resolve();
+    this.sizesBeforeRestriction.push((await Deno.stat(path)).size);
   }
 }
 
@@ -110,6 +111,21 @@ class FailingGit implements GitWorkspaceGuard {
 class FailingAtomicReplacer implements AtomicReplacer {
   replace(_stagingPath: string, _targetPath: string): Promise<void> {
     throw new Error("injected atomic replacement failure");
+  }
+}
+
+class MutatingReadFileSystem extends DenoMaterializationFileSystem {
+  targetPath = "";
+  targetReads = 0;
+
+  override async read(path: string): Promise<Uint8Array | undefined> {
+    if (path === this.targetPath) {
+      this.targetReads += 1;
+      if (this.targetReads === 2) {
+        await Deno.writeTextFile(path, '{"externally":"raced"}\n');
+      }
+    }
+    return await super.read(path);
   }
 }
 
@@ -250,6 +266,7 @@ Deno.test("Tavily materializes exact deterministic bytes and complete receipts",
       Object.keys(sharedReceiptFixture.entries[0]),
     );
     assertEquals(permissions.calls, 1);
+    assertEquals(permissions.sizesBeforeRestriction, [0]);
 
     // The same operation and snapshot is a byte-for-byte no-op with the same complete receipt.
     assertEquals(await adapter.configureWorkspace(request), receipt);
@@ -267,6 +284,7 @@ Deno.test("Tavily materializes exact deterministic bytes and complete receipts",
       "updated bytes",
     );
     assertEquals(permissions.calls, 2);
+    assertEquals(permissions.sizesBeforeRestriction, [0, 0]);
   });
 });
 
@@ -400,6 +418,51 @@ Deno.test("an existing managed-path document is never adopted", async () => {
   });
 });
 
+Deno.test("a non-Git Workspace skips exclude while retaining permission enforcement", async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const fs = new DenoMaterializationFileSystem();
+    const replacer = new DenoAtomicReplacer();
+    const permissions = new RecordingPermissions();
+    const adapter = new OpenCodeMcpMaterializer({
+      fileSystem: fs,
+      permissions,
+      atomicReplacer: replacer,
+      git: new RepositoryLocalGitGuard(fs, replacer),
+      state: new MemoryStateStore(),
+    });
+    await adapter.configureWorkspace(snapshot(workspaceRoot));
+    assertEquals(permissions.calls, 1);
+    assertEquals(permissions.sizesBeforeRestriction, [0]);
+    assertEquals(await pathExists(join(workspaceRoot, ".gitignore")), false);
+  });
+});
+
+Deno.test("a broken Git marker blocks instead of masquerading as a non-Git Workspace", async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    await Deno.writeTextFile(
+      join(workspaceRoot, ".git"),
+      "not a gitdir pointer\n",
+    );
+    const fs = new DenoMaterializationFileSystem();
+    const replacer = new DenoAtomicReplacer();
+    const adapter = new OpenCodeMcpMaterializer({
+      fileSystem: fs,
+      permissions: new NoopPermissions(),
+      atomicReplacer: replacer,
+      git: new RepositoryLocalGitGuard(fs, replacer),
+      state: new MemoryStateStore(),
+    });
+    const error = await captureFailure(
+      adapter.configureWorkspace(snapshot(workspaceRoot)),
+    );
+    assertEquals(error.code, "mcp_config_git_exclude_failed");
+    assertEquals(
+      await pathExists(join(workspaceRoot, ".opencode", "opencode.json")),
+      false,
+    );
+  });
+});
+
 Deno.test("Git workspaces receive only the exact local exclude and reject tracked paths", async () => {
   await withWorkspace(async (workspaceRoot) => {
     await git(workspaceRoot, "init");
@@ -485,6 +548,45 @@ Deno.test("atomic replacement failure preserves the prior committed document", a
     ));
     assertEquals(error.code, "mcp_materialization_conflict");
     assertEquals([...await readManaged(workspaceRoot)], [...committed]);
+    const competingOperation = await captureFailure(
+      materializer(state).configureWorkspace(
+        snapshot(
+          workspaceRoot,
+          [tavily("Bearer another-secret")],
+          "op-competing",
+          6,
+        ),
+      ),
+    );
+    assertEquals(competingOperation.code, "mcp_materialization_conflict");
+    assertEquals(
+      (await directoryNames(join(workspaceRoot, ".opencode"))).filter((name) =>
+        name.endsWith(".tmp")
+      ),
+      [],
+    );
+  });
+});
+
+Deno.test("a last-moment external replacement blocks the atomic commit", async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const state = new MemoryStateStore();
+    await materializer(state).configureWorkspace(snapshot(workspaceRoot));
+    const target = join(workspaceRoot, ".opencode", "opencode.json");
+    const fs = new MutatingReadFileSystem();
+    fs.targetPath = target;
+    const adapter = new OpenCodeMcpMaterializer({
+      fileSystem: fs,
+      permissions: new NoopPermissions(),
+      atomicReplacer: new DenoAtomicReplacer(),
+      git: new NoopGit(),
+      state,
+    });
+    const error = await captureFailure(adapter.configureWorkspace(
+      snapshot(workspaceRoot, [tavily("Bearer rotated-secret")], "op-race", 5),
+    ));
+    assertEquals(error.code, "mcp_materialization_conflict");
+    assertEquals(await Deno.readTextFile(target), '{"externally":"raced"}\n');
     assertEquals(
       (await directoryNames(join(workspaceRoot, ".opencode"))).filter((name) =>
         name.endsWith(".tmp")

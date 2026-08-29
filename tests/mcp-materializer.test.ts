@@ -283,8 +283,12 @@ Deno.test("Tavily materializes exact deterministic bytes and complete receipts",
       ),
       "updated bytes",
     );
-    assertEquals(permissions.calls, 2);
-    assertEquals(permissions.sizesBeforeRestriction, [0, 0]);
+    assertEquals(permissions.calls, 3);
+    assertEquals(permissions.sizesBeforeRestriction, [
+      0,
+      expectedBytes.length,
+      0,
+    ]);
   });
 });
 
@@ -316,6 +320,23 @@ Deno.test("a completed write before ledger commit is recoverable only by the sam
       await fingerprintBytes(await expectedTavilyDocument()),
     );
     assertEquals(state.values.get("target-1")?.prepared, undefined);
+  });
+});
+
+Deno.test("an idempotent replay reapplies restrictive document permissions", async () => {
+  await withWorkspace(async (workspaceRoot) => {
+    const state = new MemoryStateStore();
+    await materializer(state).configureWorkspace(snapshot(workspaceRoot));
+    const permissions = new RecordingPermissions();
+    const receipt = await materializer(state, { permissions })
+      .configureWorkspace(snapshot(workspaceRoot));
+
+    assertEquals(receipt.appliedGeneration, 4);
+    assertEquals(permissions.calls, 1);
+    assert(
+      permissions.sizesBeforeRestriction[0] > 0,
+      "the committed document must be restricted on replay",
+    );
   });
 });
 

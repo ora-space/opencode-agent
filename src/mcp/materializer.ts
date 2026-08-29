@@ -140,6 +140,9 @@ export class OpenCodeMcpMaterializer {
 
     if (observedFingerprint === documentFingerprint) {
       await this.#assertObservedUnchanged(targetPath, observedFingerprint);
+      // Fingerprints prove byte ownership but cannot detect chmod or ACL drift. Reapplying the
+      // current-user-only policy keeps an idempotent replay from accepting exposed credentials.
+      await this.#dependencies.permissions.restrict(targetPath);
       await this.#commitAppliedState(
         request.agentTargetId,
         documentFingerprint,

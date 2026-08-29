@@ -140,7 +140,10 @@ export class OpenCodeMcpMaterializer {
 
     if (observedFingerprint === documentFingerprint) {
       await this.#assertObservedUnchanged(targetPath, observedFingerprint);
-      await this.#commitState(request.agentTargetId, documentFingerprint);
+      await this.#commitAppliedState(
+        request.agentTargetId,
+        documentFingerprint,
+      );
       return receipt;
     }
 
@@ -170,7 +173,10 @@ export class OpenCodeMcpMaterializer {
     } finally {
       await this.#dependencies.fileSystem.cleanup(stagingPath);
     }
-    await this.#commitState(request.agentTargetId, documentFingerprint);
+    await this.#commitAppliedState(
+      request.agentTargetId,
+      documentFingerprint,
+    );
     return receipt;
   }
 
@@ -325,7 +331,7 @@ export class OpenCodeMcpMaterializer {
       return receipt;
     }
     if (observedBytes === undefined) {
-      await this.#commitState(request.agentTargetId, undefined);
+      await this.#clearOwnershipState(request.agentTargetId);
       return receipt;
     }
     await this.#prepareState(request, state, desiredFingerprint, "delete");
@@ -334,7 +340,7 @@ export class OpenCodeMcpMaterializer {
       await fingerprintBytes(observedBytes),
     );
     await this.#dependencies.fileSystem.removeFile(targetPath);
-    await this.#commitState(request.agentTargetId, undefined);
+    await this.#clearOwnershipState(request.agentTargetId);
     return receipt;
   }
 
@@ -385,14 +391,26 @@ export class OpenCodeMcpMaterializer {
     }
   }
 
-  /** Advances applied ownership only after the filesystem side effect has committed. */
-  async #commitState(
+  /** Advances applied ownership only after the filesystem replacement has committed. */
+  async #commitAppliedState(
     agentTargetId: string,
-    fingerprint: string | undefined,
+    fingerprint: string,
   ): Promise<void> {
     try {
       await this.#dependencies.state.write(agentTargetId, {
-        applied: fingerprint === undefined ? undefined : { fingerprint },
+        applied: { fingerprint },
+        prepared: undefined,
+      });
+    } catch {
+      throw new McpMaterializationError("mcp_materialization_conflict");
+    }
+  }
+
+  /** Clears ownership only after absence or a fingerprint-verified deletion is established. */
+  async #clearOwnershipState(agentTargetId: string): Promise<void> {
+    try {
+      await this.#dependencies.state.write(agentTargetId, {
+        applied: undefined,
         prepared: undefined,
       });
     } catch {

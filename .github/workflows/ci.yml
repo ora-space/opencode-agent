@@ -1,0 +1,33 @@
+name: CI
+
+# Deliberately generic, like release.yml: it runs the repository's own tasks rather than spelling
+# out commands, so a plugin scaffolded from this one gets working CI by copying the file.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # Type checking resolves the whole module graph, so it is also what catches a dependency
+      # that cannot be fetched — including an @ora-space/plugin-sdk version that is not published
+      # yet. That failure is real and should stay visible rather than be worked around here.
+      - name: Type check
+        run: deno task check
+
+      # Lint is purely syntactic and resolves nothing, so it stays meaningful even while the
+      # step above cannot run.
+      - name: Lint
+        run: deno task lint

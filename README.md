@@ -29,15 +29,15 @@ agent provider. Deleting the directory removes the agent.
 
 ## Contract mapping
 
-| Host requirement                     | Implementation                                                           |
-| ------------------------------------ | ------------------------------------------------------------------------ |
-| `ora/register` with methods + emits  | `runAgentPlugin` → SDK `defineAgent`: 3 methods, `agent/acp` emit        |
-| `agent/start`                        | `handlers/lifecycle.ts` spawns `opencode acp --cwd <cwd>`                |
-| `agent/stop`                         | kills the CLI, keeps this process alive so a later start can respawn it  |
-| `agent/listModels`                   | `handlers/models.ts`: `opencode models`, cached, curated fallback        |
-| `agent/acp` (both directions)        | `handlers/acp.ts` + `services/opencode-client.ts`, payload never parsed  |
-| CLI absent → `-32001`                | `services/command.ts` throws `PluginMethodError(AGENT_NOT_INSTALLED, …)` |
-| one plugin = one agent = one process | a single plugin instance owning a single `OpenCodeClient`                |
+| Host requirement                     | Implementation                                                             |
+| ------------------------------------ | -------------------------------------------------------------------------- |
+| `ora/register` with methods + emits  | `runAgentPlugin` → SDK `defineAgent`: 3 methods, `agent/acp` emit          |
+| `agent/start`                        | `handlers/lifecycle.ts` spawns `opencode acp --cwd <cwd>`                  |
+| `agent/stop`                         | kills the CLI, keeps this process alive so a later start can respawn it    |
+| `agent/listModels`                   | `handlers/models.ts`: `opencode models`, cached, curated fallback          |
+| `agent/acp` (both directions)        | `handlers/acp.ts` + `services/opencode-client.ts`, payload never parsed    |
+| `ORA_OPENCODE_BIN` absent → `-32001` | `services/command.ts`; a broken _bundled_ binary is a real failure instead |
+| one plugin = one agent = one process | a single plugin instance owning a single `OpenCodeClient`                  |
 
 ## API registration architecture
 
@@ -71,11 +71,31 @@ src/
     models.ts             agent/listModels
     acp.ts                agent/acp (host → CLI)
   services/
-    opencode-client.ts    spawns and owns `opencode acp`, both stdio pumps
-    command.ts            binary resolution, spawn candidates, not-found mapping
+    opencode-client.ts    owns the `opencode acp` child, both stdio pumps
+    command.ts            which program to spawn, and how a failure is classified
+    bundled-binary.ts     where the bundled CLI lives inside the package
     ndjson.ts             NDJSON line codec for the CLI's stdio
+bundle.config.ts          which upstream CLI is bundled, and its asset per target
+scripts/package.ts        builds one .orax per target; plugin-agnostic
 tests/host-simulator.ts   drives this plugin the way the Ora host does
 ```
+
+`bundle.config.ts` is the only plugin-specific half of the release pipeline.
+`scripts/package.ts` and `.github/workflows/release.yml` name no CLI and are
+meant to be copied to another agent plugin unchanged, with only that config
+rewritten. `src/services/bundled-binary.ts` is the single source of truth for
+the in-package binary path, shared by the runtime spawn and the packaging step
+so the two cannot drift.
+
+Run the packaging locally with:
+
+```
+deno task build
+deno task package --tag v0.2.4 --repo ora-space/opencode-agent
+```
+
+`gh` is the only external tool required — archives are read and written
+in-process, so this works the same on a maintainer's machine as it does in CI.
 
 Every module imports `@ora-space/plugin-sdk` as a fully qualified
 `jsr:@ora-space/plugin-sdk@0.1.3` specifier rather than a bare one, because Ora
@@ -87,15 +107,26 @@ in every import together when the SDK changes.
 
 ## Requirements
 
-- The OpenCode CLI on PATH (`opencode`, or the `opencode.cmd` shim npm installs
-  on Windows). Pin an explicit binary with `ORA_OPENCODE_BIN`.
+- Nothing. The OpenCode CLI ships **inside** this package under
+  `assets/bin/opencode[.exe]`, so there is no separate install step and no PATH
+  lookup. Releases are built one `.orax` per target triple, and the package
+  self-declares its target in `[artifact]` so Ora refuses a package built for
+  another machine rather than landing a binary that cannot run.
 - Deno, which Ora provides for plugin processes.
 
-Ora launches agent plugins with
-`--allow-run --allow-read --allow-env
---allow-net`; this plugin needs all four
-(spawn the CLI, resolve it, read `ORA_OPENCODE_BIN`, let the CLI reach its
-providers).
+`ORA_OPENCODE_BIN` still overrides the bundled binary with an explicit path,
+which is how you drive a locally built OpenCode: a developer's own build has no
+way into an installed package. Only that path reports `agent_not_installed` when
+it is missing — a bundled binary that will not resolve means the package is
+broken or was built for the wrong target, which fails identically on every retry
+and so must surface rather than be retried quietly.
+
+The plugin itself no longer spawns anything: it asks the host to spawn the
+bundled CLI by package-relative path (`packageCommand`), because a plugin is
+told no host path and cannot reliably compute one. Ora launches agent plugins
+with `--allow-run --allow-read --allow-env --allow-net`; of those this plugin
+now only uses `--allow-env` (`ORA_OPENCODE_BIN`) and leaves the CLI's own
+network access to the CLI.
 
 ## Installation and discovery
 

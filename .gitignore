@@ -1,1 +1,21 @@
+# Build output: the bundled entrypoint, the staging tree, downloaded upstream archives, and the
+# .orax packages themselves. All reproducible with `deno task build && deno task package`.
 dist/
+
+# The bundled OpenCode CLI, staged here only to run `deno task simulate` against a real binary.
+# Released packages never take it from the repository: `scripts/package.ts` downloads it per
+# target at package time. Scoped to `bin/` so genuine static assets stay committable.
+assets/bin/
+
+# package.json is the legacy Ora manifest and declares no dependencies, but its presence makes a
+# stray `npm install` plausible.
+node_modules/
+package-lock.json
+
+# Local-only Deno config, for overriding an unpublished @ora-space/plugin-sdk with `links`.
+deno.local.json
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp

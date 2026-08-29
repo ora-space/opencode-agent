@@ -2,6 +2,7 @@ import type {
   AcpSender,
   AgentModel,
   AgentStartContext,
+  HostProcesses,
   JsonValue,
 } from "@ora-space/plugin-sdk";
 import {
@@ -30,6 +31,8 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   #send: AcpSender | undefined;
   /** The workspace root the CLI is running against; also what a Skill Effect restart respawns into. */
   #cwd: string | undefined;
+  /** Set by `onActivate`, which the base class runs before the host can call anything. */
+  #processes: HostProcesses | undefined;
 
   readonly #client = new OpenCodeClient({
     onAcpFrame: (frame) => {
@@ -53,6 +56,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   override onActivate(context: PluginContext): void {
     console.info(`${context.pluginId} activated`);
+    this.#processes = context.processes;
     this.#client.attachProcesses(context.processes);
   }
 
@@ -67,7 +71,12 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   override onStop = (): Promise<void> => stopOpenCode(this.#client);
 
-  override onListModels = (): Promise<AgentModel[]> => listOpenCodeModels();
+  override onListModels = (): Promise<AgentModel[]> => {
+    if (this.#processes === undefined) {
+      throw new Error("agent/listModels was called before activation");
+    }
+    return listOpenCodeModels(this.#processes);
+  };
 
   override onAcp = (frame: JsonValue): Promise<void> | void =>
     forwardAcpFrame(this.#client, this.#effects, frame);

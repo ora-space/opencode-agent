@@ -5,6 +5,7 @@
  *   deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts
  */
 import type { JsonValue } from "@ora-space/plugin-sdk";
+import { fromFileUrl } from "@std/path";
 
 const JSON_RPC_FRAME_TYPE = 0x01;
 const MAX_FRAME_LENGTH = 16 * 1024 * 1024;
@@ -172,13 +173,28 @@ async function handleChildProcessRequest(
   }
 }
 
+/**
+ * Resolves one spawn request's program the way the real host does.
+ *
+ * `packageCommand` is joined onto the package root — this repository, since a simulated run has
+ * no installed package — so the simulator exercises the same two-form contract Ora enforces.
+ */
+function resolveSimulatedProgram(params: Record<string, unknown>): string {
+  const packageCommand = params.packageCommand as string | undefined;
+  if (packageCommand === undefined) {
+    return params.command as string;
+  }
+  const packageRoot = new URL("../", import.meta.url);
+  return fromFileUrl(new URL(packageCommand, packageRoot));
+}
+
 async function dispatchChildProcessMethod(
   method: string,
   params: Record<string, unknown>,
 ): Promise<JsonValue> {
   switch (method) {
     case "ora/childprocess/spawn": {
-      const command = params.command as string;
+      const command = resolveSimulatedProgram(params);
       const args = (params.args as string[] | undefined) ?? [];
       const cwd = (params.cwd as string | null | undefined) ?? undefined;
       const child = new Deno.Command(command, {

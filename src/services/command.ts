@@ -3,91 +3,54 @@ import {
   HostRequestError,
   PluginMethodError,
 } from "@ora-space/plugin-sdk";
-
-/** Names one concrete way to launch the OpenCode CLI. */
-export interface OpenCodeCommand {
-  command: string;
-  extraArgs: string[];
-}
+import { bundledBinaryPath } from "./bundled-binary.ts";
 
 /**
- * Resolves the command that launches OpenCode.
+ * Names the program that launches OpenCode, in the shape `HostProcesses.spawn` accepts.
  *
- * `ORA_OPENCODE_BIN` pins an explicit binary path, which matters on Windows where npm only
- * exposes a `.cmd` shim on PATH. Otherwise the platform default is used and expanded by
- * {@link spawnCandidates}.
+ * The two forms decide who resolves the path. `packageCommand` is package-relative and resolved
+ * by the host against this plugin's install root; `command` is handed to the operating system.
  */
-export function resolveOpenCodeCommand(): OpenCodeCommand {
+export type OpenCodeProgram =
+  | { packageCommand: string; command?: never }
+  | { command: string; packageCommand?: never };
+
+/**
+ * Resolves the program that launches OpenCode.
+ *
+ * The bundled binary is the normal answer, and this plugin never learns — or computes — the host
+ * path it lives at. `ORA_OPENCODE_BIN` stays as the one escape hatch: a developer running a
+ * locally built OpenCode has no way to get that binary into an installed package.
+ */
+export function resolveOpenCodeProgram(): OpenCodeProgram {
   const explicit = readEnv("ORA_OPENCODE_BIN");
   if (explicit !== undefined && explicit.trim() !== "") {
-    return { command: explicit.trim(), extraArgs: [] };
+    return { command: explicit.trim() };
   }
-  return Deno.build.os === "windows"
-    ? { command: "opencode.cmd", extraArgs: [] }
-    : { command: "opencode", extraArgs: [] };
+  return { packageCommand: bundledBinaryPath() };
 }
 
 /**
- * Expands one resolved command into spawn candidates in priority order.
+ * Rethrows one spawn failure under the classification the host should act on.
  *
- * npm installs only a `.cmd` shim on Windows while scoop and choco expose `opencode.exe`; trying
- * both keeps either installation style working with no user configuration.
+ * A missing `ORA_OPENCODE_BIN` target is local configuration, which Ora retries quietly. A bundled
+ * binary that will not resolve is a broken or wrong-target package: it fails identically on every
+ * retry, so reporting it as `agent_not_installed` would bury it under an infinite silent retry
+ * loop instead of surfacing the agent as failing.
  */
-export function spawnCandidates(command: string): string[] {
-  if (Deno.build.os !== "windows") {
-    return [command];
-  }
-  const fallback = command.toLowerCase().endsWith(".cmd")
-    ? "opencode"
-    : "opencode.cmd";
-  return command === fallback ? [command] : [command, fallback];
-}
-
-/**
- * Classifies a spawn failure as a missing binary.
- *
- * The host spawns the process now, so this is the host's own classification
- * (`program_not_found` means the OS could not resolve the executable) rather than sniffing
- * platform-specific error text.
- */
-export function isCommandNotFound(error: unknown): boolean {
-  return error instanceof HostRequestError &&
+export function rethrowSpawnFailure(
+  program: OpenCodeProgram,
+  error: unknown,
+): never {
+  const notFound = error instanceof HostRequestError &&
     error.kind === "program_not_found";
-}
-
-/**
- * Runs `attempt` against every candidate for the resolved OpenCode command.
- *
- * The first candidate that does not throw wins. Failures are classified on the way out: a
- * failure that is not "binary missing" is the real startup fault and is rethrown as-is, while an
- * exhausted candidate list means OpenCode is simply absent, which Ora retries quietly.
- */
-export async function tryEachCandidate<T>(
-  attempt: (resolved: OpenCodeCommand) => T | Promise<T>,
-): Promise<T> {
-  const resolved = resolveOpenCodeCommand();
-  const candidates = spawnCandidates(resolved.command);
-  const failures: unknown[] = [];
-  for (const command of candidates) {
-    try {
-      return await attempt({ command, extraArgs: resolved.extraArgs });
-    } catch (error) {
-      failures.push(error);
-    }
+  if (notFound && program.command !== undefined) {
+    throw new PluginMethodError(
+      AGENT_NOT_INSTALLED,
+      `ORA_OPENCODE_BIN points at ${program.command}, which does not exist`,
+    );
   }
-
-  const realFailure = failures.find((error) => !isCommandNotFound(error));
-  if (realFailure !== undefined) {
-    throw realFailure instanceof Error
-      ? realFailure
-      : new Error(String(realFailure));
-  }
-  throw new PluginMethodError(
-    AGENT_NOT_INSTALLED,
-    `OpenCode is not installed or not on PATH (tried: ${
-      candidates.join(", ")
-    }); install it from https://opencode.ai/docs/ or set ORA_OPENCODE_BIN`,
-  );
+  throw error instanceof Error ? error : new Error(String(error));
 }
 
 /** Reads an env var, treating a missing read permission as an unset value. */

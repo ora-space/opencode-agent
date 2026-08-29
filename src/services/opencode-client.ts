@@ -1,5 +1,9 @@
 import type { HostProcesses, JsonValue } from "@ora-space/plugin-sdk";
-import { tryEachCandidate } from "./command.ts";
+import {
+  type OpenCodeProgram,
+  resolveOpenCodeProgram,
+  rethrowSpawnFailure,
+} from "./command.ts";
 import { decodeLines, encodeLine } from "./ndjson.ts";
 
 /** The subset of a spawned child process this bridge depends on, so tests can substitute one. */
@@ -14,7 +18,11 @@ export interface SpawnedProcess {
 
 export interface OpenCodeClientOptions {
   /** Overrides process spawning; injected by tests. Production spawns through `attachProcesses`. */
-  spawn?: (command: string, args: string[], cwd: string) => SpawnedProcess;
+  spawn?: (
+    program: OpenCodeProgram,
+    args: string[],
+    cwd: string,
+  ) => SpawnedProcess;
   /** Receives every ACP frame emitted by the CLI, in output order. */
   onAcpFrame?: (frame: JsonValue) => void;
   /** Invoked after the CLI exits on its own, never after an explicit stop. */
@@ -36,7 +44,7 @@ interface RunningProcess {
  */
 export class OpenCodeClient {
   readonly #spawn: (
-    command: string,
+    program: OpenCodeProgram,
     args: string[],
     cwd: string,
   ) => SpawnedProcess | Promise<SpawnedProcess>;
@@ -49,7 +57,7 @@ export class OpenCodeClient {
 
   constructor(options: OpenCodeClientOptions = {}) {
     this.#spawn = options.spawn ??
-      ((command, args, cwd) => this.#spawnViaHost(command, args, cwd));
+      ((program, args, cwd) => this.#spawnViaHost(program, args, cwd));
     this.#onAcpFrame = options.onAcpFrame ?? (() => {});
     this.#onExited = options.onExited ?? (() => {});
   }
@@ -79,16 +87,15 @@ export class OpenCodeClient {
     await this.stop();
     this.#expectedExit = false;
 
-    await tryEachCandidate(async ({ command, extraArgs }) => {
-      const process = await this.#spawn(
-        command,
-        [...extraArgs, "acp", "--cwd", cwd],
-        cwd,
-      );
-      this.#running = { process, stdinWriter: process.stdin.getWriter() };
-      this.#attach(process);
-      return process;
-    });
+    const program = resolveOpenCodeProgram();
+    let process: SpawnedProcess;
+    try {
+      process = await this.#spawn(program, ["acp", "--cwd", cwd], cwd);
+    } catch (error) {
+      rethrowSpawnFailure(program, error);
+    }
+    this.#running = { process, stdinWriter: process.stdin.getWriter() };
+    this.#attach(process);
   }
 
   /**
@@ -193,7 +200,7 @@ export class OpenCodeClient {
    * `SpawnedProcess` so every other method above stays unaware of who owns the OS process.
    */
   async #spawnViaHost(
-    command: string,
+    program: OpenCodeProgram,
     args: string[],
     cwd: string,
   ): Promise<SpawnedProcess> {
@@ -202,7 +209,7 @@ export class OpenCodeClient {
         "OpenCodeClient cannot spawn before attachProcesses() runs",
       );
     }
-    const child = await this.#processes.spawn({ command, args, cwd });
+    const child = await this.#processes.spawn({ ...program, args, cwd });
     return {
       stdin: new WritableStream<Uint8Array>({
         write: (chunk) => child.write(chunk),

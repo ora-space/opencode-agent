@@ -5,6 +5,7 @@
  *   deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts
  */
 import type { JsonValue } from "@ora-space/plugin-sdk";
+import { fromFileUrl } from "@std/path";
 
 const JSON_RPC_FRAME_TYPE = 0x01;
 const MAX_FRAME_LENGTH = 16 * 1024 * 1024;
@@ -96,13 +97,22 @@ const writer = child.stdin.getWriter();
 const send = (message: JsonValue) => writer.write(encodeFrame(message));
 const inbound = decodeFrames(child.stdout)[Symbol.asyncIterator]();
 
+/**
+ * How long any one step may wait before the run is declared stuck.
+ *
+ * Generous because a cold CLI start is genuinely slow, but bounded: without it a step that never
+ * gets an answer hangs the whole run with no output at all, which is exactly what a bundled binary
+ * that starts but does not speak ACP produces.
+ */
+const STEP_TIMEOUT_MS = 90_000;
+
 /** Reads frames until one satisfies `match`, so streamed notifications never desynchronize. */
 async function waitFor(
   match: (message: Record<string, unknown>) => boolean,
   label: string,
 ): Promise<Record<string, unknown>> {
   while (true) {
-    const next = await inbound.next();
+    const next = await withStepTimeout(inbound.next(), label);
     if (next.done) {
       throw new Error(`plugin closed stdout while waiting for ${label}`);
     }
@@ -121,6 +131,32 @@ async function waitFor(
     }
     console.log(`[host] << ${JSON.stringify(message).slice(0, 160)}`);
   }
+}
+
+/**
+ * Fails a pending read with the step it was waiting on instead of hanging forever.
+ *
+ * The abandoned read is not cancelled: this only ever fires on the way to exiting, and naming the
+ * stuck step is worth more here than tidily unwinding the stream.
+ */
+function withStepTimeout<T>(pending: Promise<T>, label: string): Promise<T> {
+  let timer: number | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `timed out after ${
+              STEP_TIMEOUT_MS / 1000
+            }s waiting for ${label}; the CLI started but never answered`,
+          ),
+        ),
+      STEP_TIMEOUT_MS,
+    );
+  });
+  return Promise.race([pending, expiry]).finally(() =>
+    clearTimeout(timer)
+  ) as Promise<T>;
 }
 
 /** One subprocess this simulator, playing the host, spawned on the plugin's behalf. */
@@ -172,13 +208,28 @@ async function handleChildProcessRequest(
   }
 }
 
+/**
+ * Resolves one spawn request's program the way the real host does.
+ *
+ * `packageCommand` is joined onto the package root — this repository, since a simulated run has
+ * no installed package — so the simulator exercises the same two-form contract Ora enforces.
+ */
+function resolveSimulatedProgram(params: Record<string, unknown>): string {
+  const packageCommand = params.packageCommand as string | undefined;
+  if (packageCommand === undefined) {
+    return params.command as string;
+  }
+  const packageRoot = new URL("../", import.meta.url);
+  return fromFileUrl(new URL(packageCommand, packageRoot));
+}
+
 async function dispatchChildProcessMethod(
   method: string,
   params: Record<string, unknown>,
 ): Promise<JsonValue> {
   switch (method) {
     case "ora/childprocess/spawn": {
-      const command = params.command as string;
+      const command = resolveSimulatedProgram(params);
       const args = (params.args as string[] | undefined) ?? [];
       const cwd = (params.cwd as string | null | undefined) ?? undefined;
       const child = new Deno.Command(command, {

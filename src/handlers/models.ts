@@ -1,5 +1,5 @@
-import type { AgentModel } from "@ora-space/plugin-sdk";
-import { tryEachCandidate } from "../services/command.ts";
+import type { AgentModel, HostProcesses } from "@ora-space/plugin-sdk";
+import { resolveOpenCodeProgram } from "../services/command.ts";
 
 /** Reads the raw model id list from OpenCode; injectable so the cache can be exercised. */
 export type ModelIdSource = () => Promise<string[]>;
@@ -28,7 +28,8 @@ let cache: Promise<AgentModel[]> | undefined;
  * changes because the user logged into a new provider therefore needs a plugin restart.
  */
 export function listOpenCodeModels(
-  source: ModelIdSource = runOpenCodeModels,
+  processes: HostProcesses,
+  source: ModelIdSource = () => runOpenCodeModels(processes),
 ): Promise<AgentModel[]> {
   if (cache === undefined) {
     cache = discoverModels(source);
@@ -62,20 +63,24 @@ function displayNameFor(id: string): string {
   return slash === -1 ? id : id.slice(slash + 1);
 }
 
-/** Runs `opencode models` and returns the non-empty id lines it prints. */
-async function runOpenCodeModels(): Promise<string[]> {
-  const output = await tryEachCandidate(async ({ command, extraArgs }) => {
-    const { code, stdout } = await new Deno.Command(command, {
-      args: [...extraArgs, "models"],
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    if (code !== 0) {
-      throw new Error(`opencode models exited with code ${code}`);
-    }
-    return new TextDecoder().decode(stdout);
+/**
+ * Runs `opencode models` through the host and returns the non-empty id lines it prints.
+ *
+ * This goes through the host rather than `Deno.Command` for the same reason the ACP server does:
+ * the bundled CLI's path is only resolvable by the host, and a process the host owns is torn down
+ * with this plugin generation instead of outliving it.
+ */
+async function runOpenCodeModels(processes: HostProcesses): Promise<string[]> {
+  const child = await processes.spawn({
+    ...resolveOpenCodeProgram(),
+    args: ["models"],
   });
+  await child.closeStdin();
+  const output = await new Response(child.stdout).text();
+  const { code } = await child.exited;
+  if (code !== 0) {
+    throw new Error(`opencode models exited with code ${code}`);
+  }
 
   const ids = output
     .split(/\r?\n/)

@@ -1,9 +1,58 @@
 {
   "version": "5",
-  "workspace": {
-    "links": {
-      "jsr:@ora-space/plugin-sdk@0.4.0": {},
-      "npm:@ora-space/plugin-sdk@0.4.0": {}
+  "specifiers": {
+    "jsr:@ora-space/plugin-sdk@0.5.0": "0.5.0",
+    "jsr:@std/cli@^1.0.32": "1.0.32",
+    "jsr:@std/fmt@^1.0.10": "1.0.10",
+    "jsr:@std/internal@^1.0.14": "1.0.14",
+    "jsr:@std/path@^1.1.6": "1.1.6",
+    "jsr:@std/streams@^1.0.17": "1.1.2",
+    "jsr:@std/tar@~0.1.10": "0.1.10",
+    "jsr:@zip-js/zip-js@^2.8.61": "2.8.61"
+  },
+  "jsr": {
+    "@ora-space/plugin-sdk@0.5.0": {
+      "integrity": "421c79eaefef92b087bd93ff9a12e48222a599fecd8c49cfcf5d74df4c48eef3"
+    },
+    "@std/cli@1.0.32": {
+      "integrity": "188b3a100d6202d64e3f5bd3d799c7fa4f6d77f92cc65eb7f641c1fa0aa92a66",
+      "dependencies": [
+        "jsr:@std/fmt",
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/fmt@1.0.10": {
+      "integrity": "90dfba288802ac6de82fb31d0917eb9e4450b9925b954d5e51fc29ac07419db5"
+    },
+    "@std/internal@1.0.14": {
+      "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    },
+    "@std/path@1.1.6": {
+      "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/streams@1.1.2": {
+      "integrity": "0249bf9b78a999f57032ca4d8e7ccaa57579090242640b35ddc948fbb745d3af"
+    },
+    "@std/tar@0.1.10": {
+      "integrity": "6bf907f3a4bc8bfef42973ba132d946756a6161ef6b914a9e1c06debe664db17",
+      "dependencies": [
+        "jsr:@std/streams"
+      ]
+    },
+    "@zip-js/zip-js@2.8.61": {
+      "integrity": "8da37318aeefa76faa915058722ab8d1ee51e068edc8be69ea0810e01d724955"
     }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@ora-space/plugin-sdk@0.5.0",
+      "jsr:@std/cli@^1.0.32",
+      "jsr:@std/path@^1.1.6",
+      "jsr:@std/tar@~0.1.10",
+      "jsr:@zip-js/zip-js@^2.8.61"
+    ]
   }
 }

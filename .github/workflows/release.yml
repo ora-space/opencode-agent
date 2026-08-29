@@ -1,5 +1,9 @@
 name: Release
 
+# Deliberately generic: every fact about which CLI is bundled and which upstream asset serves
+# each target lives in `bundle.config.ts`, and the packaging itself in `scripts/package.ts`. This
+# file should be copyable to another agent plugin unchanged.
+
 on:
   push:
     tags:
@@ -24,19 +28,19 @@ jobs:
       - name: Build
         run: deno task build
 
-      - name: Package .orax archive
-        run: |
-          set -euo pipefail
-          NAME=$(grep -m1 '^identifier *=' orax.toml | sed -E 's/^identifier *= *"(.*)"/\1/')
-          FILE="${NAME}-${GITHUB_REF_NAME}.orax"
-          zip -j "$FILE" orax.toml dist/main.js logo.svg README.md
-          echo "ORAX_FILE=$FILE" >> "$GITHUB_ENV"
+      # Writes dist/packages/*.orax (one per declared target) and dist/manifest.toml.
+      - name: Package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deno task package --tag "${{ github.ref_name }}" --repo "${{ github.repository }}"
 
       - name: Create Release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" "${ORAX_FILE}" \
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/packages/*.orax dist/manifest.toml \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes

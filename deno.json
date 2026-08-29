@@ -1,18 +1,20 @@
 {
   "name": "@ora-space/opencode-agent",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "exports": "./src/main.ts",
   "minimumDependencyAge": 0,
   "imports": {
-    "@ora-space/plugin-sdk": "jsr:@ora-space/plugin-sdk@0.5.0",
+    "@ora-space/plugin-sdk": "jsr:@ora-space/plugin-sdk@0.6.0",
     "@std/cli": "jsr:@std/cli@^1.0.32",
+    "@std/jsonc": "jsr:@std/jsonc@^1.0.2",
     "@std/path": "jsr:@std/path@^1.1.6",
     "@std/tar": "jsr:@std/tar@^0.1.10",
     "@zip-js/zip-js": "jsr:@zip-js/zip-js@^2.8.61"
   },
   "tasks": {
-    "check": "deno check src/main.ts scripts/package.ts tests/host-simulator.ts",
+    "check": "deno check src/main.ts scripts/package.ts tests/host-simulator.ts tests/mcp-materializer.test.ts",
     "lint": "deno lint src scripts tests bundle.config.ts",
+    "test": "deno test --allow-read --allow-write --allow-run tests/mcp-materializer.test.ts tests/mcp-registration.test.ts",
     "format": "deno fmt src scripts tests bundle.config.ts deno.json package.json README.md",
     "simulate": "deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts",
     "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts",

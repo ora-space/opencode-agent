@@ -1,7 +1,7 @@
 {
   "name": "@ora-space/opencode-agent",
-  "version": "0.1.0",
-  "description": "Ora agent plugin that runs OpenCode as an ACP agent.",
+  "version": "0.3.0",
+  "description": "Ora ACP agent plugin with safe HTTP MCP materialization for OpenCode.",
   "type": "module",
   "license": "Apache-2.0",
   "ora": {

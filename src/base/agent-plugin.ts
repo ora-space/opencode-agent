@@ -1,12 +1,15 @@
 import {
   type AcpSender,
   type AgentEffectDefinition,
+  type AgentMcpConfigurationDefinition,
   type AgentModel,
   type AgentStartContext,
   createHostProcesses,
+  createStorage,
   defineAgent,
   type HostProcesses,
   type JsonValue,
+  type PluginStorage,
 } from "@ora-space/plugin-sdk";
 
 /**
@@ -20,6 +23,7 @@ import {
 export interface PluginContext {
   readonly pluginId: string;
   readonly processes: HostProcesses;
+  readonly storage: PluginStorage;
 }
 
 /** What the caller of {@link runAgentPlugin} supplies; `processes` is assembled internally. */
@@ -98,6 +102,15 @@ export abstract class AgentPlugin {
    * way `onStart` and friends are mounted above.
    */
   effects: AgentEffectDefinition | undefined = undefined;
+
+  /**
+   * Declares MCP capability and handler as one SDK definition.
+   *
+   * Keeping this property high-level is intentional: the SDK is the only layer allowed to pair
+   * the registration capability with `agent/configureWorkspace`, so subclasses cannot publish a
+   * one-sided contract.
+   */
+  mcpConfiguration: AgentMcpConfigurationDefinition | undefined = undefined;
 }
 
 /** One entry of the flattened dispatch table, already bound to its plugin instance. */
@@ -136,9 +149,11 @@ export async function runAgentPlugin(
         | void
         | Promise<void>,
     effects: plugin.effects,
+    mcpConfiguration: plugin.mcpConfiguration,
   });
   const processes = createHostProcesses(definition);
-  await plugin.onActivate({ pluginId: options.pluginId, processes });
+  const storage = createStorage(definition);
+  await plugin.onActivate({ pluginId: options.pluginId, processes, storage });
 
   try {
     await definition.run();

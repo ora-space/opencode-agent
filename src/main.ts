@@ -15,6 +15,12 @@ import { SkillEffectCoordinator } from "./handlers/effects.ts";
 import { startOpenCode, stopOpenCode } from "./handlers/lifecycle.ts";
 import { listOpenCodeModels } from "./handlers/models.ts";
 import { OpenCodeClient } from "./services/opencode-client.ts";
+import { defineOpenCodeMcpConfiguration } from "./mcp/definition.ts";
+import { PluginStorageManagedStateStore } from "./mcp/ledger.ts";
+import {
+  createOpenCodeMcpMaterializer,
+  type OpenCodeMcpMaterializer,
+} from "./mcp/materializer.ts";
 
 /** Must match `ora.id` in package.json, which is also this agent's identity inside Ora. */
 const PLUGIN_ID = "ora-space.opencode";
@@ -33,6 +39,8 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   #cwd: string | undefined;
   /** Set by `onActivate`, which the base class runs before the host can call anything. */
   #processes: HostProcesses | undefined;
+  /** Installed during activation, before the SDK starts accepting configuration calls. */
+  #mcpMaterializer: OpenCodeMcpMaterializer | undefined;
 
   readonly #client = new OpenCodeClient({
     onAcpFrame: (frame) => {
@@ -54,10 +62,17 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   override readonly effects = this.#effects.definition;
 
+  override readonly mcpConfiguration = defineOpenCodeMcpConfiguration(
+    () => this.#mcpMaterializer,
+  );
+
   override onActivate(context: PluginContext): void {
     console.info(`${context.pluginId} activated`);
     this.#processes = context.processes;
     this.#client.attachProcesses(context.processes);
+    this.#mcpMaterializer = createOpenCodeMcpMaterializer(
+      new PluginStorageManagedStateStore(context.storage),
+    );
   }
 
   override onStart = async (

@@ -14,6 +14,10 @@ conversation runs against the OpenCode CLI through its native
   to run by hand.
 - Streams OpenCode's models, sessions, and responses straight through to Ora's
   UI via ACP, including the in-session model picker.
+- Materializes Ora's complete HTTP MCP snapshot into the Workspace-local,
+  exclusively managed `.opencode/opencode.json` document. OpenCode 0.3.0 does
+  not advertise stdio MCP support, so the Host skips those MCPs without blocking
+  supported HTTP servers.
 - Ships with the OpenCode CLI bundled inside the package, so there is nothing
   else to install.
 
@@ -46,7 +50,7 @@ cmd /c mklink /J "<ORA_DATA_DIR>\plugins" "%USERPROFILE%\.ora\plugins\installed"
 
 ```
 deno task build
-deno task package --tag v0.2.4 --repo ora-space/opencode-agent
+deno task package --tag v0.3.0 --repo ora-space/opencode-agent
 ```
 
 This produces one `.orax` package per target platform, with the matching
@@ -71,6 +75,25 @@ the binary under `assets/bin/` — never one on your `PATH`. That directory is
 git-ignored and is only needed for this.
 
 `deno task check` type checks and `deno task lint` lints the sources.
+`deno task test` exercises MCP materialization in temporary Git and non-Git
+Workspaces.
+
+## Managed MCP configuration
+
+Ora-generated MCP configuration is intentionally separate from user-owned
+OpenCode configuration. The plugin never modifies project-root `opencode.json`
+or `opencode.jsonc`. It writes only `.opencode/opencode.json`, and only when its
+private applied/prepared fingerprint ledger proves ownership; a pre-existing or
+externally changed file is preserved as a blocking conflict.
+
+In a Git Workspace, only `/.opencode/opencode.json` is added to the repository's
+local exclude file. The plugin does not touch `.gitignore` or ignore the
+`.opencode` directory, so the neighboring Skill surface remains visible. The
+managed document is atomically replaced from a same-directory staging file and
+restricted to the current OS account because protocol v1 may contain resolved
+plaintext headers. Root configuration collisions, tracked managed paths, Git
+failures, and permission failures leave the previous committed document
+unchanged.
 
 ## Known limits
 

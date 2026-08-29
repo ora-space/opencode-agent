@@ -140,7 +140,7 @@ async function waitFor(
  * stuck step is worth more here than tidily unwinding the stream.
  */
 function withStepTimeout<T>(pending: Promise<T>, label: string): Promise<T> {
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const expiry = new Promise<never>((_, reject) => {
     timer = setTimeout(
       () =>
@@ -351,6 +351,26 @@ if (effectSurfaces.length === 0) {
   throw new Error("registration did not declare any Effect surface");
 }
 console.log(`ok: effectSurfaces ${JSON.stringify(effectSurfaces)}`);
+
+const mcpConfiguration =
+  (register.params as { mcpConfiguration?: unknown } | undefined)
+    ?.mcpConfiguration;
+if (
+  JSON.stringify(mcpConfiguration) !==
+    JSON.stringify({
+      protocolVersion: 1,
+      transports: ["http"],
+      coordination: "wait_for_idle_and_restart",
+    })
+) {
+  throw new Error("registration did not declare HTTP-only MCP protocol v1");
+}
+const methods =
+  (register.params as { methods?: unknown[] } | undefined)?.methods ?? [];
+if (!methods.includes("agent/configureWorkspace")) {
+  throw new Error("registration did not pair MCP capability with its handler");
+}
+console.log("ok: HTTP-only MCP Configuration protocol v1");
 
 await send({
   jsonrpc: "2.0",

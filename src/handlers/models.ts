@@ -1,5 +1,5 @@
 import type { AgentModel, HostProcesses } from "@ora-space/plugin-sdk";
-import { resolveOpenCodeProgram } from "../services/command.ts";
+import { spawnOpenCode } from "../services/command.ts";
 
 /** Reads the raw model id list from OpenCode; injectable so the cache can be exercised. */
 export type ModelIdSource = () => Promise<string[]>;
@@ -71,10 +71,7 @@ function displayNameFor(id: string): string {
  * with this plugin generation instead of outliving it.
  */
 async function runOpenCodeModels(processes: HostProcesses): Promise<string[]> {
-  const child = await processes.spawn({
-    ...resolveOpenCodeProgram(),
-    args: ["models"],
-  });
+  const child = await spawnOpenCode(processes, { args: ["models"] });
   await child.closeStdin();
   const output = await new Response(child.stdout).text();
   const { code } = await child.exited;

@@ -1,44 +1,62 @@
 import type {
-  AgentEffectContext,
+  AgentEffectCoordinationContext,
   AgentEffectDefinition,
-  AgentEffectIdleState,
-  AgentEffectRestartContext,
-  EffectSurfaceDeclaration,
+  AgentEffectReadinessContext,
+  EffectResourceDeclaration,
   JsonValue,
 } from "@ora-space/plugin-sdk";
+import { PluginMethodError, SKILL_DIRECTORY_V1 } from "@ora-space/plugin-sdk";
 import type { OpenCodeClient } from "../services/opencode-client.ts";
 
 /**
- * The only Skill surface OpenCode reads: a project-relative `skills/<name>/SKILL.md` tree.
+ * The only Skill Resource OpenCode reads: a project-relative `skills/<name>/SKILL.md` tree.
  *
  * See https://opencode.ai/docs/skills — OpenCode also reads `.claude/skills` and `.agents/skills`,
- * but those are Preserved State from this plugin's point of view: Ora only manages the surface it
+ * but those are Preserved State from this plugin's point of view: Ora only manages the Resource it
  * declares here, so it never fights another tool over the compatibility directories.
  */
-export const SKILLS_SURFACE: EffectSurfaceDeclaration = {
+export const SKILLS_RESOURCE: EffectResourceDeclaration = {
   workspaceRelativePath: ".opencode/skills",
-  materializationFormat: "skill_directory.v1",
-  coordination: "wait_for_idle_and_restart",
+  materializationFormat: SKILL_DIRECTORY_V1,
+  coordination: "quiesce_before_mutation",
 };
 
 const SESSION_PROMPT_METHOD = "session/prompt";
 
+/** The code this plugin reports a Consumer call it cannot satisfy right now under. */
+const CONSUMER_NOT_READY = -32000;
+
 /**
- * Coordinates the `.opencode/skills` Effect surface against the one CLI process this plugin owns.
+ * How long `effect/coordinate` waits for in-flight turns before reporting the Target still busy.
+ *
+ * Ora allows a plugin control call 30 seconds and coordination holds that call open, so this has
+ * to finish well inside it. Waiting at all is worth it because the common case is a turn seconds
+ * from finishing; past that the honest answer is to fail this attempt and let Ora's reconcile
+ * schedule bring the mutation back, rather than hold a host call for the length of a prompt that
+ * may legitimately run for minutes.
+ */
+const QUIESCE_TIMEOUT_MS = 10_000;
+
+/** How often the drain loop rechecks whether every in-flight turn has answered. */
+const QUIESCE_POLL_MS = 50;
+
+/**
+ * Coordinates the `.opencode/skills` Effect Resource against the one CLI process this plugin owns.
  *
  * OpenCode scans its Skill directories once at startup and never rescans them, so a Skill edit on
  * disk only takes effect once the CLI restarts. This tracks in-flight `session/prompt` turns from
  * the ACP frames already flowing through the bridge — nothing here parses ACP beyond `method` and
- * `id` — and, once every turn has finished, holds any new one behind a barrier until `restart` has
- * respawned the CLI with the new Skill files and replayed what it held.
+ * `id` — and answers Ora's three Consumer calls around that: `coordinate` holds new turns behind a
+ * barrier and waits for the running ones, `reactivate` respawns the CLI so it rescans and replays
+ * what was held, and `verifyReady` reports whether the process Ora is about to mark ready is one
+ * that has actually read the Skills on disk.
  */
 export class SkillEffectCoordinator {
   readonly #client: OpenCodeClient;
   readonly #cwd: () => string | undefined;
   readonly #openTurns = new Set<string | number>();
-  /** `undefined` while no barrier is held; an array from the moment `waitForIdle` reports ready. */
+  /** `undefined` while no barrier is held; an array from the moment `coordinate` engages one. */
   #held: JsonValue[] | undefined;
-  #appliedGeneration: number | undefined;
 
   constructor(client: OpenCodeClient, cwd: () => string | undefined) {
     this.#client = client;
@@ -46,9 +64,10 @@ export class SkillEffectCoordinator {
   }
 
   readonly definition: AgentEffectDefinition = {
-    surfaces: [SKILLS_SURFACE],
-    waitForIdle: (context) => this.#waitForIdle(context),
-    restart: (context) => this.#restart(context),
+    resources: [SKILLS_RESOURCE],
+    coordinate: (context) => this.#coordinate(context),
+    reactivate: (context) => this.#reactivate(context),
+    verifyReady: (context) => this.#verifyReady(context),
   };
 
   /**
@@ -93,36 +112,96 @@ export class SkillEffectCoordinator {
   }
 
   /**
-   * Reports whether every turn has finished, engaging the new-turn barrier the moment it has.
+   * Engages the new-turn barrier, then reports safe to mutate once every running turn has
+   * answered.
    *
-   * Idempotent by design: once the barrier is engaged, `#openTurns` stays empty forever because
-   * `intercept` routes every later `session/prompt` into `#held` instead, so a repeated call keeps
-   * returning `ready` with no further side effect.
+   * The barrier goes up before the wait, not after it. A check that only latched on an observed
+   * idle moment would never find one in a workspace whose prompts keep arriving; holding first
+   * makes the set of turns to wait for finite, so the wait always terminates.
+   *
+   * Idempotent, as Ora requires of both coordination calls: a repeat finds the barrier already up
+   * and the turn set already drained, and returns without touching anything.
    */
-  #waitForIdle(_context: AgentEffectContext): AgentEffectIdleState {
-    if (this.#openTurns.size > 0) {
-      return "waiting_for_idle";
-    }
+  async #coordinate(
+    context: AgentEffectCoordinationContext,
+  ): Promise<JsonValue> {
     this.#held ??= [];
-    return "ready";
+    const deadline = Date.now() + QUIESCE_TIMEOUT_MS;
+    while (this.#openTurns.size > 0) {
+      if (Date.now() >= deadline) {
+        // Ora only reactivates Targets whose coordination succeeded, so a barrier abandoned here
+        // would hold its queued prompts for the life of the process. Release before failing, and
+        // let the next reconcile attempt engage a fresh one.
+        const stranded = this.#openTurns.size;
+        await this.#release();
+        throw new PluginMethodError(
+          CONSUMER_NOT_READY,
+          `OpenCode still has ${stranded} turn(s) in flight`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, QUIESCE_POLL_MS));
+    }
+    return { targetId: context.targetId, state: "safe_to_mutate" };
   }
 
   /**
    * Restarts the CLI so it rescans `.opencode/skills`, then replays every held turn in order.
    *
-   * The barrier is released only after the queue is fully drained, and draining re-checks the
-   * queue length on every iteration, so a `session/prompt` that arrives mid-restart is still
-   * caught by `intercept` and gets appended in time to be replayed rather than dropped.
+   * The barrier is the idempotence marker: a repeat call finds none held — exactly the state a
+   * finished reactivation leaves behind — and does not restart a CLI that has already rescanned,
+   * which would tear down the sessions that came back after the first restart.
    */
-  async #restart(context: AgentEffectRestartContext): Promise<void> {
+  async #reactivate(
+    context: AgentEffectCoordinationContext,
+  ): Promise<JsonValue> {
+    if (this.#held === undefined) {
+      return { targetId: context.targetId, state: "reactivated" };
+    }
     const cwd = this.#cwd();
-    const alreadyRunning = this.#client.running &&
-      this.#appliedGeneration === context.generation;
-    if (!alreadyRunning && cwd !== undefined) {
+    if (cwd !== undefined) {
       await this.#client.start(cwd);
     }
-    this.#appliedGeneration = context.generation;
+    await this.#release();
+    return { targetId: context.targetId, state: "reactivated" };
+  }
 
+  /**
+   * Reports whether the running CLI can consume this exact Target projection.
+   *
+   * The proof OpenCode can offer is that a process is up and no mutation is mid-flight: it reads
+   * its Skills once at startup, so a CLI running outside a coordination episode has already
+   * scanned what is on disk. Anything else throws, which is how a Consumer says "not ready" — Ora
+   * records readiness only from a call that returned.
+   */
+  #verifyReady(context: AgentEffectReadinessContext): JsonValue {
+    if (!this.#client.running) {
+      throw new PluginMethodError(
+        CONSUMER_NOT_READY,
+        "the OpenCode CLI is not running, so it has read no Skills",
+      );
+    }
+    if (this.#held !== undefined) {
+      throw new PluginMethodError(
+        CONSUMER_NOT_READY,
+        "OpenCode is quiesced for a Skill mutation and has not rescanned yet",
+      );
+    }
+    return {
+      targetId: context.targetId,
+      generation: context.generation,
+      consumerRevisionId: context.consumerRevisionId,
+      projectionDigest: context.projectionDigest,
+    };
+  }
+
+  /**
+   * Drains every held turn into the CLI, then lets new ones through again.
+   *
+   * The queue length is rechecked on every iteration rather than snapshotted, so a
+   * `session/prompt` that `intercept` absorbs while the drain is still running is replayed in this
+   * pass instead of being stranded behind a barrier that is about to come down.
+   */
+  async #release(): Promise<void> {
     while (this.#held !== undefined && this.#held.length > 0) {
       const frame = this.#held.shift();
       if (frame !== undefined) {

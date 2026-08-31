@@ -197,14 +197,34 @@ async function handleChildProcessRequest(
     );
     await send({ jsonrpc: "2.0", id: message.id, result });
   } catch (error) {
+    // Ora classifies every childprocess failure with a stable `data.kind`, and the plugin's
+    // resolution ladder branches on it, so a simulator that answered with a bare message would
+    // exercise a path production never takes.
+    const classified = error instanceof SimulatedSpawnError
+      ? error
+      : new SimulatedSpawnError(
+        "io",
+        error instanceof Error ? error.message : String(error),
+      );
     await send({
       jsonrpc: "2.0",
       id: message.id,
       error: {
-        code: -32000,
-        message: error instanceof Error ? error.message : String(error),
+        code: classified.kind === "io" ? -32000 : -32602,
+        message: classified.message,
+        data: { kind: classified.kind },
       },
     });
+  }
+}
+
+/** One childprocess failure carrying the classification Ora's host would have attached. */
+class SimulatedSpawnError extends Error {
+  readonly kind: string;
+
+  constructor(kind: string, message: string) {
+    super(message);
+    this.kind = kind;
   }
 }
 
@@ -212,7 +232,11 @@ async function handleChildProcessRequest(
  * Resolves one spawn request's program the way the real host does.
  *
  * `packageCommand` is joined onto the package root — this repository, since a simulated run has
- * no installed package — so the simulator exercises the same two-form contract Ora enforces.
+ * no installed package — so the simulator exercises the same two-form contract Ora enforces. A
+ * path this "package" does not carry is reported as `package_command_missing` rather than left to
+ * fail at spawn, because that answer is what makes the plugin fall back to a PATH lookup: without
+ * it, a checkout with no staged binary would look like a broken package instead of the universal
+ * one it is.
  */
 function resolveSimulatedProgram(params: Record<string, unknown>): string {
   const packageCommand = params.packageCommand as string | undefined;
@@ -220,7 +244,30 @@ function resolveSimulatedProgram(params: Record<string, unknown>): string {
     return params.command as string;
   }
   const packageRoot = new URL("../", import.meta.url);
-  return fromFileUrl(new URL(packageCommand, packageRoot));
+  const resolved = fromFileUrl(new URL(packageCommand, packageRoot));
+  const stat = statOrUndefined(resolved);
+  if (stat === undefined) {
+    throw new SimulatedSpawnError(
+      "package_command_missing",
+      `packageCommand ${packageCommand} is not part of this plugin package`,
+    );
+  }
+  if (!stat.isFile) {
+    throw new SimulatedSpawnError(
+      "invalid_package_command",
+      `packageCommand ${packageCommand} must name a regular package file`,
+    );
+  }
+  return resolved;
+}
+
+/** Stats one path, treating an absent one as a value rather than a throw. */
+function statOrUndefined(path: string): Deno.FileInfo | undefined {
+  try {
+    return Deno.statSync(path);
+  } catch {
+    return undefined;
+  }
 }
 
 async function dispatchChildProcessMethod(
@@ -232,13 +279,21 @@ async function dispatchChildProcessMethod(
       const command = resolveSimulatedProgram(params);
       const args = (params.args as string[] | undefined) ?? [];
       const cwd = (params.cwd as string | null | undefined) ?? undefined;
-      const child = new Deno.Command(command, {
-        args,
-        cwd,
-        stdin: "piped",
-        stdout: "piped",
-        stderr: "piped",
-      }).spawn();
+      let child: Deno.ChildProcess;
+      try {
+        child = new Deno.Command(command, {
+          args,
+          cwd,
+          stdin: "piped",
+          stdout: "piped",
+          stderr: "piped",
+        }).spawn();
+      } catch (error) {
+        throw new SimulatedSpawnError(
+          error instanceof Deno.errors.NotFound ? "program_not_found" : "io",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       const processId = String(nextChildProcessId++);
       simulatedChildProcesses.set(processId, {
         child,
@@ -344,13 +399,13 @@ const register = await waitFor(
 );
 console.log(`ok: register ${JSON.stringify(register.params)}`);
 
-const effectSurfaces =
-  (register.params as { effectSurfaces?: unknown[] } | undefined)
-    ?.effectSurfaces ?? [];
-if (effectSurfaces.length === 0) {
-  throw new Error("registration did not declare any Effect surface");
+const effectResources =
+  (register.params as { effectResources?: unknown[] } | undefined)
+    ?.effectResources ?? [];
+if (effectResources.length === 0) {
+  throw new Error("registration did not declare any Effect Resource");
 }
-console.log(`ok: effectSurfaces ${JSON.stringify(effectSurfaces)}`);
+console.log(`ok: effectResources ${JSON.stringify(effectResources)}`);
 
 await send({
   jsonrpc: "2.0",
@@ -419,47 +474,88 @@ console.log(
   }`,
 );
 
-const surface = effectSurfaces[0] as {
-  workspaceRelativePath: string;
-  materializationFormat: string;
-  coordination: string;
-};
-const effectParams = {
-  surfaceKey: "sim-surface",
-  workspaceRoot: Deno.cwd(),
-  relativePath: surface.workspaceRelativePath,
+// Ora addresses coordination by Target and Resource identity; the plugin never resolves a path
+// from these, so any stable pair drives the same code the host would.
+const coordinationParams = {
+  targetId: "sim-target",
+  resourceIds: ["sim-resource"],
 };
 
 await send({
   jsonrpc: "2.0",
   id: 3,
-  method: "effect/waitForIdle",
-  params: effectParams,
+  method: "effect/coordinate",
+  params: coordinationParams,
 });
-const idle = await waitFor(
+const coordinated = await waitFor(
   (message) => message.id === 3,
-  "effect/waitForIdle",
+  "effect/coordinate",
 );
-const idleState = (idle.result as { state?: string } | undefined)?.state;
-if (idleState !== "ready") {
-  throw new Error(`expected waitForIdle to report ready, got ${idleState}`);
+if (coordinated.error !== undefined) {
+  throw new Error(
+    `effect/coordinate failed: ${JSON.stringify(coordinated.error)}`,
+  );
 }
-console.log("ok: effect/waitForIdle (no turn in flight) -> ready");
+console.log("ok: effect/coordinate (no turn in flight) -> safe to mutate");
 
+// Readiness must be refused while the barrier is up: the CLI has not rescanned yet, and Ora would
+// otherwise mark a Target ready against Skills its Consumer has never read.
 await send({
   jsonrpc: "2.0",
   id: 4,
-  method: "effect/restart",
-  params: { ...effectParams, generation: 1 },
+  method: "effect/verifyReady",
+  params: {
+    targetId: coordinationParams.targetId,
+    generation: 1,
+    consumerRevisionId: "sim-revision",
+    projectionDigest: "sim-digest",
+  },
 });
-const restarted = await waitFor(
+const readyWhileQuiesced = await waitFor(
   (message) => message.id === 4,
-  "effect/restart",
+  "effect/verifyReady while quiesced",
 );
-if (restarted.error !== undefined) {
-  throw new Error(`effect/restart failed: ${JSON.stringify(restarted.error)}`);
+if (readyWhileQuiesced.error === undefined) {
+  throw new Error("effect/verifyReady reported ready while still quiesced");
 }
-console.log("ok: effect/restart (CLI respawned)");
+console.log("ok: effect/verifyReady while quiesced -> refused");
+
+await send({
+  jsonrpc: "2.0",
+  id: 5,
+  method: "effect/reactivate",
+  params: coordinationParams,
+});
+const reactivated = await waitFor(
+  (message) => message.id === 5,
+  "effect/reactivate",
+);
+if (reactivated.error !== undefined) {
+  throw new Error(
+    `effect/reactivate failed: ${JSON.stringify(reactivated.error)}`,
+  );
+}
+console.log("ok: effect/reactivate (CLI respawned)");
+
+await send({
+  jsonrpc: "2.0",
+  id: 6,
+  method: "effect/verifyReady",
+  params: {
+    targetId: coordinationParams.targetId,
+    generation: 1,
+    consumerRevisionId: "sim-revision",
+    projectionDigest: "sim-digest",
+  },
+});
+const ready = await waitFor(
+  (message) => message.id === 6,
+  "effect/verifyReady",
+);
+if (ready.error !== undefined) {
+  throw new Error(`effect/verifyReady failed: ${JSON.stringify(ready.error)}`);
+}
+console.log("ok: effect/verifyReady after reactivate -> ready");
 
 // The barrier must release a fully working bridge: prove the respawned CLI still answers ACP.
 await send({
@@ -485,8 +581,8 @@ console.log(
   }`,
 );
 
-await send({ jsonrpc: "2.0", id: 5, method: "agent/stop", params: {} });
-await waitFor((message) => message.id === 5, "agent/stop");
+await send({ jsonrpc: "2.0", id: 7, method: "agent/stop", params: {} });
+await waitFor((message) => message.id === 7, "agent/stop");
 console.log("ok: agent/stop");
 
 await send({ jsonrpc: "2.0", method: "ora/shutdown" });

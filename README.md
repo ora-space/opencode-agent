@@ -24,8 +24,12 @@ conversation runs against the OpenCode CLI through its native
   Each release is built per platform, and the package refuses to run on a
   machine it wasn't built for rather than risk launching a binary that can't
   execute.
+- A release can also be published without the CLI (see
+  [Building from source](#building-from-source)). Such a package installs on
+  every platform and runs the `opencode` already on your `PATH`, so you keep
+  your own install and its version.
 - If you'd rather run your own build of OpenCode instead of the bundled one, set
-  `ORA_OPENCODE_BIN` to its full path.
+  `ORA_OPENCODE_BIN` to its full path. It wins over both of the above.
 
 ## Installing
 
@@ -52,6 +56,22 @@ deno task package --tag v0.2.4 --repo ora-space/opencode-agent
 This produces one `.orax` package per target platform, with the matching
 OpenCode CLI bundled inside. `gh` is the only external tool required.
 
+`bundle.config.ts` decides which of the two release shapes is built, and it is
+the only file to change to switch:
+
+| `cli`              | Produces                               | At runtime                               |
+| ------------------ | -------------------------------------- | ---------------------------------------- |
+| `"bundled"`        | one `.orax` per declared target triple | runs the CLI inside the package          |
+| `"user_installed"` | one `.orax` every host can install     | runs the `opencode` on the user's `PATH` |
+
+Ora's marketplace release carries either per-target artifacts or one universal
+artifact, never both, which is why this is one choice per release rather than a
+mix. The plugin source is identical for both: it asks the host for its bundled
+CLI first and falls back to a `PATH` lookup only when the host answers that this
+package carries none — so a bundled package never silently runs some other
+OpenCode, and a bundled binary that cannot run is reported as a broken package
+instead of being retried forever as a missing CLI.
+
 To drive the plugin end-to-end the way Ora's host does, stage the bundled CLI
 where an installed package would have it, then run the simulator:
 
@@ -67,8 +87,10 @@ deno task simulate
 ```
 
 The simulator resolves `packageCommand` against the repository root, so it runs
-the binary under `assets/bin/` — never one on your `PATH`. That directory is
-git-ignored and is only needed for this.
+the binary under `assets/bin/`. That directory is git-ignored and is only needed
+for this: with nothing staged there, the simulator answers exactly as Ora would
+for a package that bundles no CLI, and the run exercises the `PATH` fallback
+against your own OpenCode instead.
 
 `deno task check` type checks and `deno task lint` lints the sources.
 

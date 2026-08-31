@@ -1,10 +1,11 @@
 /**
  * Builds one `.orax` per target for an agent plugin that bundles an upstream CLI.
  *
- * Nothing here names a particular plugin or CLI: what to download and which asset serves each
- * target comes from `bundle.config.ts`, and where the binary lands inside the package comes from
- * the plugin's own `bundledBinaryPath`. That is what lets this script and the release workflow be
- * copied to another agent plugin unchanged.
+ * Nothing here names a particular plugin or CLI, and nothing here reaches into a plugin's `src/`:
+ * what to download, which asset serves each target, and where the binary lands inside the package
+ * all come from `bundle.config.ts`. That is what lets this script and the release workflow be
+ * copied to another agent plugin unchanged — including to one that bundles no CLI at all and
+ * therefore has no in-package binary path to name.
  *
  * Usage:
  *   deno task package --tag v1.2.3 --repo owner/name
@@ -18,18 +19,47 @@ import { basename, dirname, join, relative } from "@std/path";
 import { UntarStream } from "@std/tar";
 import { BlobReader, ZipReader, ZipWriter } from "@zip-js/zip-js";
 import bundle from "../bundle.config.ts";
-import {
-  bundledBinaryPath,
-  type TargetOs,
-} from "../src/services/bundled-binary.ts";
 
-/** What a plugin declares about the upstream CLI it bundles. */
-export interface BundleConfig {
-  /** GitHub `owner/name` the CLI is released from. */
-  upstream: string;
-  /** Release asset serving each canonical Rust target triple. */
-  assets: Record<string, string>;
-}
+/** Operating systems a package can be built for, as `Deno.build.os` spells them. */
+export type TargetOs = typeof Deno.build.os;
+
+/**
+ * How a plugin reaches the CLI it drives, which is what decides the shape of its release.
+ *
+ * The two are mutually exclusive per release, because a marketplace release carries either one
+ * universal artifact or one artifact per target triple, never both. Bundling produces a package
+ * per declared target, each refusing to install on a machine it was not built for; the other
+ * produces a single package installable everywhere, which resolves the user's own install from
+ * PATH at spawn time. The plugin source is identical either way — it discovers which package it
+ * is running from when it spawns.
+ */
+export type BundleConfig =
+  | {
+    cli: "bundled";
+    /** GitHub `owner/name` the CLI is released from. */
+    upstream: string;
+    /** Release asset serving each canonical Rust target triple. */
+    assets: Record<string, string>;
+    /**
+     * Package-relative path this target's binary is staged at, which the plugin later asks the
+     * host to spawn.
+     *
+     * Supplied by the plugin rather than fixed here so the staging path and the path the running
+     * plugin names stay one decision: a mismatch between them would only ever surface as an
+     * install that cannot start its agent.
+     */
+    binaryPath: (os: TargetOs) => string;
+  }
+  | { cli: "user_installed" };
+
+/**
+ * This plugin's own declaration, widened to the union this script handles.
+ *
+ * `bundle.config.ts` states one concrete shape, which narrows its type to that arm alone and would
+ * make the other arm look like dead code here. The script must compile against both, since which
+ * arm a plugin picks is exactly what it is generic over.
+ */
+const config: BundleConfig = bundle;
 
 /** One target's resolved packaging inputs. */
 interface TargetPlan {
@@ -140,12 +170,13 @@ async function openBlob(path: string): Promise<Blob> {
  * The execute bit is what makes the bundled CLI spawnable after Ora extracts the package, and a
  * ZIP carries it in the upper 16 bits of the external file attributes. A fixed `0o100755` is
  * written rather than whatever upstream recorded, so the package can never install a setuid or
- * otherwise surprising mode.
+ * otherwise surprising mode. A package that bundles no CLI names no executable: everything it
+ * ships is data Ora reads, and nothing in it is ever spawned.
  */
 async function writeOrax(
   stageDir: string,
   destination: string,
-  executable: string,
+  executable: string | undefined,
 ): Promise<void> {
   const file = await Deno.create(destination);
   const writer = new ZipWriter(file.writable);
@@ -188,9 +219,34 @@ async function sha256Hex(path: string): Promise<string> {
     .join("");
 }
 
-/** Stages one target's package tree and zips it into a `.orax`. */
-async function buildPackage(
+/**
+ * Stages the files every package ships, whether or not it also carries a CLI.
+ *
+ * `target` is the triple a bundled package self-declares in `[artifact]`, which is what lets Ora
+ * verify after extraction that the package it downloaded is really the one built for this machine.
+ * A universal package declares none: it carries no binary whose host compatibility could be wrong,
+ * and an `[artifact]` section on it would make Ora check the one thing it cannot promise.
+ */
+async function stagePluginFiles(target: string | undefined): Promise<void> {
+  await Deno.mkdir(STAGE_DIR, { recursive: true });
+  await Deno.copyFile(join(DIST, "main.js"), join(STAGE_DIR, "main.js"));
+  for (const extra of ["logo.svg", "README.md"]) {
+    await Deno.copyFile(extra, join(STAGE_DIR, extra)).catch(() => {});
+  }
+  const manifest = (await Deno.readTextFile("orax.toml")).trimEnd();
+  const artifact = target === undefined
+    ? ""
+    : `\n\n[artifact]\ntarget = "${target}"`;
+  await Deno.writeTextFile(
+    join(STAGE_DIR, "orax.toml"),
+    `${manifest}${artifact}\n`,
+  );
+}
+
+/** Stages one target's package tree, CLI included, and zips it into a `.orax`. */
+async function buildBundledPackage(
   plan: TargetPlan,
+  upstream: string,
   upstreamTag: string,
   fileName: string,
 ): Promise<void> {
@@ -205,7 +261,7 @@ async function buildPackage(
     "download",
     upstreamTag,
     "--repo",
-    bundle.upstream,
+    upstream,
     "--pattern",
     plan.asset,
     "--dir",
@@ -216,21 +272,81 @@ async function buildPackage(
   // package uses for it.
   await extractEntry(archive, basename(plan.binaryPath), staged);
 
-  await Deno.copyFile(join(DIST, "main.js"), join(STAGE_DIR, "main.js"));
-  for (const extra of ["logo.svg", "README.md"]) {
-    await Deno.copyFile(extra, join(STAGE_DIR, extra)).catch(() => {});
-  }
-  // The self-declared target is what lets Ora verify, after extraction, that the package it
-  // downloaded is really the one built for this machine.
-  const manifest = await Deno.readTextFile("orax.toml");
-  await Deno.writeTextFile(
-    join(STAGE_DIR, "orax.toml"),
-    `${manifest.trimEnd()}\n\n[artifact]\ntarget = "${plan.triple}"\n`,
-  );
-
+  await stagePluginFiles(plan.triple);
   await writeOrax(STAGE_DIR, join(PACKAGES_DIR, fileName), plan.binaryPath);
   await Deno.remove(STAGE_DIR, { recursive: true });
   await Deno.remove(archive).catch(() => {});
+}
+
+/** Stages the one package every host can install, which runs the user's own CLI. */
+async function buildUniversalPackage(fileName: string): Promise<void> {
+  await Deno.remove(STAGE_DIR, { recursive: true }).catch(() => {});
+  await stagePluginFiles(/*target*/ undefined);
+  await writeOrax(
+    STAGE_DIR,
+    join(PACKAGES_DIR, fileName),
+    /*executable*/ undefined,
+  );
+  await Deno.remove(STAGE_DIR, { recursive: true });
+}
+
+/**
+ * Builds every package this release publishes and returns the release-form manifest body.
+ *
+ * The two shapes produce different release sources — one `[[targets]]` entry per bundled package,
+ * or a single `url`/`sha256` pair — and Ora rejects a manifest carrying both, which is why the
+ * choice is made once here rather than merged afterwards.
+ */
+async function buildRelease(
+  identifier: string,
+  tag: string,
+  repo: string,
+): Promise<string> {
+  const base = `https://github.com/${repo}/releases/download/${tag}`;
+  let manifest = (await Deno.readTextFile("orax.toml")).trimEnd();
+
+  if (config.cli === "user_installed") {
+    const fileName = `${identifier}-${tag}.orax`;
+    await buildUniversalPackage(fileName);
+    const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
+    console.log(`packaged ${fileName} (no bundled CLI)`);
+    return `${manifest}\n\nurl = "${base}/${fileName}"\nsha256 = "${digest}"`;
+  }
+
+  await Deno.mkdir(DOWNLOAD_DIR, { recursive: true });
+  // Resolved once so every package in this release bundles the same CLI build: one "latest"
+  // lookup per target could straddle an upstream release and ship a version skew that only some
+  // platforms would ever see.
+  const upstreamTag = await run(
+    "gh",
+    "release",
+    "view",
+    "--repo",
+    config.upstream,
+    "--json",
+    "tagName",
+    "--jq",
+    ".tagName",
+  );
+  console.log(`Bundling ${config.upstream} ${upstreamTag}`);
+
+  for (const [triple, asset] of Object.entries(config.assets)) {
+    const plan: TargetPlan = {
+      triple,
+      asset,
+      binaryPath: config.binaryPath(osOfTriple(triple)),
+    };
+    const fileName = `${identifier}-${tag}-${triple}.orax`;
+    await buildBundledPackage(plan, config.upstream, upstreamTag, fileName);
+
+    const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
+    manifest +=
+      `\n\n[[targets]]\ntarget = "${triple}"\nurl = "${base}/${fileName}"\nsha256 = "${digest}"`;
+    console.log(`packaged ${fileName}`);
+  }
+  await Deno.remove(DOWNLOAD_DIR, { recursive: true }).catch(() => {});
+  console.log(`\nUpstream CLI: ${upstreamTag}`);
+  return manifest;
 }
 
 async function main(): Promise<void> {
@@ -243,47 +359,13 @@ async function main(): Promise<void> {
 
   const identifier = await manifestField("identifier");
   await Deno.mkdir(PACKAGES_DIR, { recursive: true });
-  await Deno.mkdir(DOWNLOAD_DIR, { recursive: true });
 
-  // Resolved once so every package in this release bundles the same CLI build: one "latest"
-  // lookup per target could straddle an upstream release and ship a version skew that only some
-  // platforms would ever see.
-  const upstreamTag = await run(
-    "gh",
-    "release",
-    "view",
-    "--repo",
-    bundle.upstream,
-    "--json",
-    "tagName",
-    "--jq",
-    ".tagName",
-  );
-  console.log(`Bundling ${bundle.upstream} ${upstreamTag}`);
+  const manifest = await buildRelease(identifier, tag, repo);
 
-  const base = `https://github.com/${repo}/releases/download/${tag}`;
-  let manifest = (await Deno.readTextFile("orax.toml")).trimEnd();
-  for (const [triple, asset] of Object.entries(bundle.assets)) {
-    const plan: TargetPlan = {
-      triple,
-      asset,
-      binaryPath: bundledBinaryPath(osOfTriple(triple)),
-    };
-    const fileName = `${identifier}-${tag}-${triple}.orax`;
-    await buildPackage(plan, upstreamTag, fileName);
-
-    const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
-    manifest +=
-      `\n\n[[targets]]\ntarget = "${triple}"\nurl = "${base}/${fileName}"\nsha256 = "${digest}"`;
-    console.log(`packaged ${fileName}`);
-  }
-
-  // The marketplace index needs the release form of the manifest, which carries the per-target
-  // download URLs and digests. It is only knowable once the packages exist, so it is generated
-  // here rather than committed.
+  // The marketplace index needs the release form of the manifest, which carries the download URLs
+  // and digests. It is only knowable once the packages exist, so it is generated here rather than
+  // committed.
   await Deno.writeTextFile(join(DIST, "manifest.toml"), `${manifest}\n`);
-  await Deno.remove(DOWNLOAD_DIR, { recursive: true }).catch(() => {});
-  console.log(`\nUpstream CLI: ${upstreamTag}`);
 }
 
 if (import.meta.main) {

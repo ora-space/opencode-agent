@@ -90,12 +90,12 @@ export abstract class AgentPlugin {
   onStop(): void | Promise<void> {}
 
   /**
-   * Declares Agent Effect surfaces this plugin consumes and coordinates their safe mutation.
+   * Declares the Effect Resources this plugin consumes and coordinates their safe mutation.
    *
    * `undefined` opts the plugin out of the Effect contract entirely, which is the default for a
    * plugin with nothing Ora manages on disk. A plugin that owns one sets this to a value serving
-   * `effect/waitForIdle` and `effect/restart`, typically by mounting a handler module the same
-   * way `onStart` and friends are mounted above.
+   * `effect/coordinate`, `effect/reactivate`, and `effect/verifyReady`, typically by mounting a
+   * handler module the same way `onStart` and friends are mounted above.
    */
   effects: AgentEffectDefinition | undefined = undefined;
 }

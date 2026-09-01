@@ -21,7 +21,7 @@ const FALLBACK_MODEL_IDS = [
 let cache: Promise<AgentModel[]> | undefined;
 
 /**
- * Serves `agent/listModels`, cached for the plugin process lifetime.
+ * Serves `agent/list_models`, cached for the plugin process lifetime.
  *
  * Ora asks for models before any session exists and may ask repeatedly while the pickers render,
  * and `opencode models` spawns a whole CLI, so the first answer is reused. A model list that

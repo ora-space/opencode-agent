@@ -318,7 +318,7 @@ async function dispatchChildProcessMethod(
       );
       return {};
     }
-    case "ora/childprocess/closeStdin": {
+    case "ora/childprocess/close_stdin": {
       await requireSimulatedProcess(params).stdinWriter.close();
       return {};
     }
@@ -464,8 +464,11 @@ console.log(
   }`,
 );
 
-await send({ jsonrpc: "2.0", id: 2, method: "agent/listModels", params: {} });
-const models = await waitFor((message) => message.id === 2, "agent/listModels");
+await send({ jsonrpc: "2.0", id: 2, method: "agent/list_models", params: {} });
+const models = await waitFor(
+  (message) => message.id === 2,
+  "agent/list_models",
+);
 const modelList = ((models.result ?? {}) as { models?: unknown[] }).models ??
   [];
 console.log(
@@ -503,7 +506,7 @@ console.log("ok: effect/coordinate (no turn in flight) -> safe to mutate");
 await send({
   jsonrpc: "2.0",
   id: 4,
-  method: "effect/verifyReady",
+  method: "effect/verify_ready",
   params: {
     targetId: coordinationParams.targetId,
     generation: 1,
@@ -513,12 +516,12 @@ await send({
 });
 const readyWhileQuiesced = await waitFor(
   (message) => message.id === 4,
-  "effect/verifyReady while quiesced",
+  "effect/verify_ready while quiesced",
 );
 if (readyWhileQuiesced.error === undefined) {
-  throw new Error("effect/verifyReady reported ready while still quiesced");
+  throw new Error("effect/verify_ready reported ready while still quiesced");
 }
-console.log("ok: effect/verifyReady while quiesced -> refused");
+console.log("ok: effect/verify_ready while quiesced -> refused");
 
 await send({
   jsonrpc: "2.0",
@@ -540,7 +543,7 @@ console.log("ok: effect/reactivate (CLI respawned)");
 await send({
   jsonrpc: "2.0",
   id: 6,
-  method: "effect/verifyReady",
+  method: "effect/verify_ready",
   params: {
     targetId: coordinationParams.targetId,
     generation: 1,
@@ -550,12 +553,12 @@ await send({
 });
 const ready = await waitFor(
   (message) => message.id === 6,
-  "effect/verifyReady",
+  "effect/verify_ready",
 );
 if (ready.error !== undefined) {
-  throw new Error(`effect/verifyReady failed: ${JSON.stringify(ready.error)}`);
+  throw new Error(`effect/verify_ready failed: ${JSON.stringify(ready.error)}`);
 }
-console.log("ok: effect/verifyReady after reactivate -> ready");
+console.log("ok: effect/verify_ready after reactivate -> ready");
 
 // The barrier must release a fully working bridge: prove the respawned CLI still answers ACP.
 await send({

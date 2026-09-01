@@ -1,5 +1,6 @@
 import {
   type AcpSender,
+  AGENT_METHODS,
   type AgentEffectDefinition,
   type AgentModel,
   type AgentStartContext,
@@ -32,17 +33,17 @@ export interface RunAgentPluginOptions {
  *
  * The host contract fixes the wire names, so the mapping is explicit rather than derived from the
  * method name: a plugin that renamed `onListModels` would otherwise silently stop serving
- * `agent/listModels`.
+ * `agent/list_models`.
  */
 export const AGENT_METHOD_ROUTES = {
-  onStart: "agent/start",
-  onStop: "agent/stop",
-  onListModels: "agent/listModels",
+  onStart: AGENT_METHODS.start,
+  onStop: AGENT_METHODS.stop,
+  onListModels: AGENT_METHODS.listModels,
 } as const;
 
 /** Maps the class method that consumes host notifications onto its wire name. */
 export const AGENT_NOTIFICATION_ROUTES = {
-  onAcp: "agent/acp",
+  onAcp: AGENT_METHODS.acp,
 } as const;
 
 /**
@@ -81,7 +82,7 @@ export abstract class AgentPlugin {
   /** [agent/acp] Receives one ACP frame the host is forwarding to the agent. */
   abstract onAcp(frame: JsonValue): void | Promise<void>;
 
-  /** [agent/listModels] Lists selectable models before any session exists. */
+  /** [agent/list_models] Lists selectable models before any session exists. */
   abstract onListModels(): AgentModel[] | Promise<AgentModel[]>;
 
   // ------------------------- optional agent contract ---------------------------
@@ -94,7 +95,7 @@ export abstract class AgentPlugin {
    *
    * `undefined` opts the plugin out of the Effect contract entirely, which is the default for a
    * plugin with nothing Ora manages on disk. A plugin that owns one sets this to a value serving
-   * `effect/coordinate`, `effect/reactivate`, and `effect/verifyReady`, typically by mounting a
+   * `effect/coordinate`, `effect/reactivate`, and `effect/verify_ready`, typically by mounting a
    * handler module the same way `onStart` and friends are mounted above.
    */
   effects: AgentEffectDefinition | undefined = undefined;

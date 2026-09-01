@@ -5,6 +5,7 @@ import type {
   HostProcesses,
   JsonValue,
 } from "@ora-space/plugin-sdk";
+import { AGENT_METHODS } from "@ora-space/plugin-sdk";
 import {
   AgentPlugin,
   type PluginContext,
@@ -73,7 +74,9 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   override onListModels = (): Promise<AgentModel[]> => {
     if (this.#processes === undefined) {
-      throw new Error("agent/listModels was called before activation");
+      throw new Error(
+        `${AGENT_METHODS.listModels} was called before activation`,
+      );
     }
     return listOpenCodeModels(this.#processes);
   };

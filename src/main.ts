@@ -15,7 +15,11 @@ import {
 import { forwardAcpFrame } from "./handlers/acp.ts";
 import { SkillEffectCoordinator } from "./handlers/effects.ts";
 import { startOpenCode, stopOpenCode } from "./handlers/lifecycle.ts";
-import { listOpenCodeModels } from "./handlers/models.ts";
+import {
+  invalidateAllOpenCodeModels,
+  invalidateOpenCodeModels,
+  listOpenCodeModels,
+} from "./handlers/models.ts";
 import { OpenCodeClient } from "./services/opencode-client.ts";
 
 /** Must match `identifier` in orax.toml, which is also this agent's identity inside Ora. */
@@ -46,6 +50,9 @@ class OpenCodeAgentPlugin extends AgentPlugin {
       });
     },
     onExited: () => {
+      if (this.#cwd !== undefined) {
+        invalidateOpenCodeModels(this.#cwd);
+      }
       console.warn(
         "the OpenCode CLI exited on its own; Ora decides whether to reconnect",
       );
@@ -66,12 +73,21 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     context: AgentStartContext,
     send: AcpSender,
   ): Promise<void> => {
+    if (this.#cwd !== undefined) {
+      invalidateOpenCodeModels(this.#cwd);
+    }
     this.#send = send;
     this.#cwd = context.cwd;
+    invalidateOpenCodeModels(context.cwd);
     await startOpenCode(this.#client, context);
   };
 
-  override onStop = (): Promise<void> => stopOpenCode(this.#client);
+  override onStop = async (): Promise<void> => {
+    if (this.#cwd !== undefined) {
+      invalidateOpenCodeModels(this.#cwd);
+    }
+    await stopOpenCode(this.#client);
+  };
 
   override onListModels = (
     context: AgentListModelsContext,
@@ -90,6 +106,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     forwardAcpFrame(this.#client, this.#effects, frame);
 
   override async onDeactivate(): Promise<void> {
+    invalidateAllOpenCodeModels();
     await this.#client.stop();
   }
 }

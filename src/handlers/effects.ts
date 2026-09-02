@@ -7,6 +7,7 @@ import type {
 } from "@ora-space/plugin-sdk";
 import { PluginMethodError, SKILL_DIRECTORY_V1 } from "@ora-space/plugin-sdk";
 import type { OpenCodeClient } from "../services/opencode-client.ts";
+import { invalidateOpenCodeModels } from "./models.ts";
 
 /**
  * The only Skill Resource OpenCode reads: a project-relative `skills/<name>/SKILL.md` tree.
@@ -159,6 +160,7 @@ export class SkillEffectCoordinator {
     }
     const cwd = this.#cwd();
     if (cwd !== undefined) {
+      invalidateOpenCodeModels(cwd);
       await this.#client.start(cwd);
     }
     await this.#release();

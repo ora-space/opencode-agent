@@ -125,27 +125,10 @@ against your own OpenCode instead.
 
 `deno task check` type checks and `deno task lint` lints the sources.
 
-### Building against an unpublished SDK
+### SDK
 
-`deno.json` pins `@ora-space/plugin-sdk@0.9.0`, the first release whose
-`agent/list_models` carries the workspace `cwd` that
-[model discovery](#model-discovery) needs. Until that version is on JSR every
-task fails to resolve it, which is the honest signal and is not worked around in
-CI. To build and simulate in the meantime, copy `deno.json` to a git-ignored
-`deno.local.json`, point its `@ora-space/plugin-sdk` import at the SDK sources
-in a desktop checkout, and run tasks through it:
-
-```
-deno task -c deno.local.json check
-deno task -c deno.local.json build
-deno task -c deno.local.json simulate
-```
-
-Each task in that file has to repeat `-c deno.local.json` inside its own
-command: `deno task -c` chooses which task list to read but does not reach the
-command it runs, which would otherwise rediscover `deno.json` and fail on the
-unpublished pin. Give it a `"lock": "deno.local.lock"` too, so a local build
-does not rewrite the committed lockfile.
+The plugin imports `@ora-space/plugin-sdk` from its published JSR package. The
+version is pinned in `deno.json` and resolved by the committed `deno.lock`.
 
 ## Model discovery
 
@@ -162,7 +145,7 @@ ends of: a request injected into it would return its answer down Ora's pipe, and
 the client capabilities Ora declares in its own `initialize` are what decide
 whether OpenCode reports a model selector at all.
 
-Answers are reused for a minute per workspace, so a picker that re-renders does
+Answers are reused for five minutes per workspace, so a picker that re-renders does
 not restart the CLI, while a model that appears after a provider login shows up
 the next time the picker is opened.
 
@@ -171,6 +154,6 @@ the next time the picker is opened.
 - Each model discovery leaves one empty session behind in OpenCode's own session
   list. OpenCode advertises `session/close`, `session/fork`, `session/list`, and
   `session/resume`, but not `session/delete`, so the probe has nothing to clean
-  up with; the one-minute cache is what keeps the count down.
+  up with; the five-minute cache is what keeps the count down.
 - Killing the CLI on agent stop is best effort; Ora retains process-tree reaping
   as a backstop.

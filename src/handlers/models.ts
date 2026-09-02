@@ -18,7 +18,7 @@ const ACP_PROTOCOL_VERSION = 1;
  * without outliving the reason a catalog changes — logging into a provider, or editing OpenCode's
  * config — which stays visible the next time the picker is opened.
  */
-const CATALOG_TTL_MS = 60_000;
+const CATALOG_TTL_MS = 5 * 60_000;
 
 /** One workspace's in-flight or recent answer. */
 interface CachedCatalog {
@@ -27,6 +27,16 @@ interface CachedCatalog {
 }
 
 const catalogs = new Map<string, CachedCatalog>();
+
+/** Drops the catalog for one workspace so the next request probes the current CLI state. */
+export function invalidateOpenCodeModels(cwd: string): void {
+  catalogs.delete(cwd);
+}
+
+/** Drops every workspace catalog when this plugin generation is going away. */
+export function invalidateAllOpenCodeModels(): void {
+  catalogs.clear();
+}
 
 /**
  * Serves `agent/list_models` for one workspace by asking OpenCode itself.

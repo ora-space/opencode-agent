@@ -90,29 +90,9 @@ function modulePath(relative: string): string {
     .replace(/^\/([A-Za-z]:)/, "$1");
 }
 
-/**
- * Names the Deno config the plugin process must run under.
- *
- * `deno task -c deno.local.json simulate` selects the task list but does not reach the command
- * the task runs, and this simulator spawns a further process of its own. Without passing the
- * config down, that grandchild rediscovers `deno.json`, fails to resolve the unpublished SDK pin,
- * and dies before writing a byte — which the host reports as "plugin stdout closed", the same
- * message any other startup failure produces. Preferring the local override matches what the
- * developer running this task already chose.
- */
-function pluginConfigArgs(): string[] {
-  const local = modulePath("../deno.local.json");
-  try {
-    Deno.statSync(local);
-    return ["--config", local];
-  } catch {
-    return [];
-  }
-}
-
 const entrypoint = modulePath("../src/main.ts");
 const child = new Deno.Command(Deno.execPath(), {
-  args: ["run", ...pluginConfigArgs(), ...HOST_PERMISSIONS, entrypoint],
+  args: ["run", ...HOST_PERMISSIONS, entrypoint],
   stdin: "piped",
   stdout: "piped",
   stderr: "inherit",

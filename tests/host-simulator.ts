@@ -167,6 +167,7 @@ interface SimulatedChildProcess {
 
 const simulatedChildProcesses = new Map<string, SimulatedChildProcess>();
 let nextChildProcessId = 1;
+let agentProcessSpawns = 0;
 
 /** Recognizes a plugin-to-host request for `ora/childprocess/*`. */
 function isChildProcessRequest(
@@ -279,11 +280,29 @@ async function dispatchChildProcessMethod(
       const command = resolveSimulatedProgram(params);
       const args = (params.args as string[] | undefined) ?? [];
       const cwd = (params.cwd as string | null | undefined) ?? undefined;
+      const requestedEnvironment = (params.env ?? {}) as Record<string, string>;
+      if (
+        Object.keys(requestedEnvironment).some((key) =>
+          key.startsWith("ORA_MCP_")
+        )
+      ) {
+        throw new SimulatedSpawnError(
+          "invalid_params",
+          "reserved MCP environment",
+        );
+      }
+      if (args.includes("acp")) {
+        agentProcessSpawns += 1;
+      }
       let child: Deno.ChildProcess;
       try {
         child = new Deno.Command(command, {
           args,
           cwd,
+          env: {
+            ...requestedEnvironment,
+            ORA_MCP_SIMULATED: "host-only-test-value",
+          },
           stdin: "piped",
           stdout: "piped",
           stderr: "piped",
@@ -399,11 +418,24 @@ const register = await waitFor(
 );
 console.log(`ok: register ${JSON.stringify(register.params)}`);
 
-const effectResources =
-  (register.params as { effectResources?: unknown[] } | undefined)
-    ?.effectResources ?? [];
-if (effectResources.length === 0) {
-  throw new Error("registration did not declare any Effect Resource");
+const effectResources = (register.params as
+  | { effectResources?: Record<string, unknown>[] }
+  | undefined)
+  ?.effectResources ?? [];
+const resourceSignatures = effectResources.map((resource) =>
+  `${resource.workspaceRelativePath}:${resource.materializationFormat}`
+).sort();
+const expectedResourceSignatures = [
+  ".opencode/opencode.json:ora/opencode-mcp-config.v1",
+  ".opencode/skills:ora/skill-directory.v1",
+];
+if (
+  JSON.stringify(resourceSignatures) !==
+    JSON.stringify(expectedResourceSignatures)
+) {
+  throw new Error(
+    `unexpected Effect Resources: ${JSON.stringify(effectResources)}`,
+  );
 }
 console.log(`ok: effectResources ${JSON.stringify(effectResources)}`);
 
@@ -481,7 +513,7 @@ console.log(
 // from these, so any stable pair drives the same code the host would.
 const coordinationParams = {
   targetId: "sim-target",
-  resourceIds: ["sim-resource"],
+  resourceIds: ["sim-skills", "sim-mcp"],
 };
 
 await send({
@@ -575,6 +607,11 @@ const sessionAfterRestart = await waitFor(
   (message) => message.method === "agent/acp" && acpFrame(message).id === 3,
   "ACP session/new after restart",
 );
+if (agentProcessSpawns !== 2) {
+  throw new Error(
+    `expected one initial spawn and one shared Effect restart, got ${agentProcessSpawns}`,
+  );
+}
 console.log(
   `ok: session/new after restart ${
     JSON.stringify(

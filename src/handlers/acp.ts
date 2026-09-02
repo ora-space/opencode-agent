@@ -1,5 +1,5 @@
 import type { JsonValue } from "@ora-space/plugin-sdk";
-import type { SkillEffectCoordinator } from "./effects.ts";
+import type { AgentEffectCoordinator } from "./effects.ts";
 import type { OpenCodeClient } from "../services/opencode-client.ts";
 
 /**
@@ -16,7 +16,7 @@ import type { OpenCodeClient } from "../services/opencode-client.ts";
  */
 export function forwardAcpFrame(
   client: OpenCodeClient,
-  effects: SkillEffectCoordinator,
+  effects: AgentEffectCoordinator,
   frame: JsonValue,
 ): Promise<void> | void {
   if (effects.intercept(frame)) {

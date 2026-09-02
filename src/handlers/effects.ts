@@ -21,6 +21,15 @@ export const SKILLS_RESOURCE: EffectResourceDeclaration = {
   coordination: "quiesce_before_mutation",
 };
 
+/** The shared project MCP file OpenCode reads at startup. */
+export const MCP_RESOURCE: EffectResourceDeclaration = {
+  workspaceRelativePath: ".opencode/opencode.json",
+  // SDK 0.8 narrows this field to Skills even though the host protocol already accepts MCP.
+  materializationFormat:
+    "ora/opencode-mcp-config.v1" as typeof SKILL_DIRECTORY_V1,
+  coordination: "quiesce_before_mutation",
+};
+
 const SESSION_PROMPT_METHOD = "session/prompt";
 
 /** The code this plugin reports a Consumer call it cannot satisfy right now under. */
@@ -51,7 +60,7 @@ const QUIESCE_POLL_MS = 50;
  * what was held, and `verifyReady` reports whether the process Ora is about to mark ready is one
  * that has actually read the Skills on disk.
  */
-export class SkillEffectCoordinator {
+export class AgentEffectCoordinator {
   readonly #client: OpenCodeClient;
   readonly #cwd: () => string | undefined;
   readonly #openTurns = new Set<string | number>();
@@ -64,7 +73,7 @@ export class SkillEffectCoordinator {
   }
 
   readonly definition: AgentEffectDefinition = {
-    resources: [SKILLS_RESOURCE],
+    resources: [SKILLS_RESOURCE, MCP_RESOURCE],
     coordinate: (context) => this.#coordinate(context),
     reactivate: (context) => this.#reactivate(context),
     verifyReady: (context) => this.#verifyReady(context),
@@ -177,13 +186,13 @@ export class SkillEffectCoordinator {
     if (!this.#client.running) {
       throw new PluginMethodError(
         CONSUMER_NOT_READY,
-        "the OpenCode CLI is not running, so it has read no Skills",
+        "the OpenCode CLI is not running, so it has read neither Skills nor MCP configuration",
       );
     }
     if (this.#held !== undefined) {
       throw new PluginMethodError(
         CONSUMER_NOT_READY,
-        "OpenCode is quiesced for a Skill mutation and has not rescanned yet",
+        "OpenCode is quiesced for a project Effect mutation and has not reloaded yet",
       );
     }
     return {

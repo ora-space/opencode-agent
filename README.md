@@ -100,3 +100,10 @@ against your own OpenCode instead.
   a provider login need a plugin restart.
 - Killing the CLI on agent stop is best effort; Ora retains process-tree reaping
   as a backstop.
+
+## Project Effects
+
+Ora manages both `.opencode/skills` and the `mcp` entries in
+`.opencode/opencode.json` as one target projection. User-owned JSON/JSONC
+content is preserved, MCP secrets remain in Ora's configuration store, and
+OpenCode is quiesced and restarted once after all safe mutations complete.

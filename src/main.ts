@@ -12,7 +12,7 @@ import {
   runAgentPlugin,
 } from "./base/agent-plugin.ts";
 import { forwardAcpFrame } from "./handlers/acp.ts";
-import { SkillEffectCoordinator } from "./handlers/effects.ts";
+import { AgentEffectCoordinator } from "./handlers/effects.ts";
 import { startOpenCode, stopOpenCode } from "./handlers/lifecycle.ts";
 import { listOpenCodeModels } from "./handlers/models.ts";
 import { OpenCodeClient } from "./services/opencode-client.ts";
@@ -51,7 +51,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     },
   });
 
-  readonly #effects = new SkillEffectCoordinator(this.#client, () => this.#cwd);
+  readonly #effects = new AgentEffectCoordinator(this.#client, () => this.#cwd);
 
   override readonly effects = this.#effects.definition;
 

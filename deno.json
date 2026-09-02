@@ -1,6 +1,6 @@
 {
   "name": "@ora-space/opencode-agent",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "exports": "./src/main.ts",
   "minimumDependencyAge": 0,
   "imports": {

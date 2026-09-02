@@ -4,7 +4,7 @@
   "exports": "./src/main.ts",
   "minimumDependencyAge": 0,
   "imports": {
-    "@ora-space/plugin-sdk": "jsr:@ora-space/plugin-sdk@0.8.0",
+    "@ora-space/plugin-sdk": "jsr:@ora-space/plugin-sdk@0.9.0",
     "@std/cli": "jsr:@std/cli@^1.0.32",
     "@std/path": "jsr:@std/path@^1.1.6",
     "@std/tar": "jsr:@std/tar@^0.1.10",
@@ -13,7 +13,7 @@
   "tasks": {
     "check": "deno check src/main.ts scripts/package.ts tests/host-simulator.ts",
     "lint": "deno lint src scripts tests bundle.config.ts",
-    "format": "deno fmt src scripts tests bundle.config.ts deno.json package.json README.md",
+    "format": "deno fmt src scripts tests bundle.config.ts deno.json README.md",
     "simulate": "deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts",
     "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts",
     "build": "deno bundle src/main.ts -o dist/main.js",

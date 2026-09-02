@@ -7,6 +7,7 @@ import type {
 } from "@ora-space/plugin-sdk";
 import { AGENT_METHODS } from "@ora-space/plugin-sdk";
 import {
+  type AgentListModelsContext,
   AgentPlugin,
   type PluginContext,
   runAgentPlugin,
@@ -17,7 +18,7 @@ import { startOpenCode, stopOpenCode } from "./handlers/lifecycle.ts";
 import { listOpenCodeModels } from "./handlers/models.ts";
 import { OpenCodeClient } from "./services/opencode-client.ts";
 
-/** Must match `ora.id` in package.json, which is also this agent's identity inside Ora. */
+/** Must match `identifier` in orax.toml, which is also this agent's identity inside Ora. */
 const PLUGIN_ID = "ora-space.opencode";
 
 /**
@@ -72,13 +73,17 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   override onStop = (): Promise<void> => stopOpenCode(this.#client);
 
-  override onListModels = (): Promise<AgentModel[]> => {
+  override onListModels = (
+    context: AgentListModelsContext,
+  ): Promise<AgentModel[]> => {
     if (this.#processes === undefined) {
       throw new Error(
         `${AGENT_METHODS.listModels} was called before activation`,
       );
     }
-    return listOpenCodeModels(this.#processes);
+    // Discovery is answered for the Workspace the host named, not for `#cwd`: `agent/start` gets a
+    // neutral directory, and a user can open pickers for a project this connection never ran in.
+    return listOpenCodeModels(this.#processes, context.cwd);
   };
 
   override onAcp = (frame: JsonValue): Promise<void> | void =>

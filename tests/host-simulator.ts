@@ -71,9 +71,11 @@ async function* decodeFrames(
   }
 }
 
-// The long-lived ACP server is no longer spawned by the plugin itself (this simulator, playing
-// the host, does that instead — see `ora/childprocess/*` below), but `--allow-run` is still
-// needed for the plugin's own one-shot `opencode models` invocation in handlers/models.ts.
+// Exactly what Ora grants an agent plugin (see `permissions::agent_permissions`), not what this
+// plugin turns out to need: no process here is spawned by the plugin any more — both the ACP
+// server and the discovery probe go through `ora/childprocess/*` below, which this simulator
+// serves — and running with a narrower set than production would hide a permission fault instead
+// of reproducing it.
 const HOST_PERMISSIONS = [
   "--no-prompt",
   "--allow-run",
@@ -82,12 +84,35 @@ const HOST_PERMISSIONS = [
   "--allow-net",
 ];
 
-/** Converts this module-relative URL into a host path, including a Windows drive prefix. */
-const entrypoint = decodeURIComponent(
-  new URL("../src/main.ts", import.meta.url).pathname,
-).replace(/^\/([A-Za-z]:)/, "$1");
+/** Converts one module-relative URL into a host path, including a Windows drive prefix. */
+function modulePath(relative: string): string {
+  return decodeURIComponent(new URL(relative, import.meta.url).pathname)
+    .replace(/^\/([A-Za-z]:)/, "$1");
+}
+
+/**
+ * Names the Deno config the plugin process must run under.
+ *
+ * `deno task -c deno.local.json simulate` selects the task list but does not reach the command
+ * the task runs, and this simulator spawns a further process of its own. Without passing the
+ * config down, that grandchild rediscovers `deno.json`, fails to resolve the unpublished SDK pin,
+ * and dies before writing a byte — which the host reports as "plugin stdout closed", the same
+ * message any other startup failure produces. Preferring the local override matches what the
+ * developer running this task already chose.
+ */
+function pluginConfigArgs(): string[] {
+  const local = modulePath("../deno.local.json");
+  try {
+    Deno.statSync(local);
+    return ["--config", local];
+  } catch {
+    return [];
+  }
+}
+
+const entrypoint = modulePath("../src/main.ts");
 const child = new Deno.Command(Deno.execPath(), {
-  args: ["run", ...HOST_PERMISSIONS, entrypoint],
+  args: ["run", ...pluginConfigArgs(), ...HOST_PERMISSIONS, entrypoint],
   stdin: "piped",
   stdout: "piped",
   stderr: "inherit",
@@ -464,11 +489,22 @@ console.log(
   }`,
 );
 
-await send({ jsonrpc: "2.0", id: 2, method: "agent/list_models", params: {} });
+// Discovery names the Workspace it is answering for, and the plugin answers it by running a
+// second, one-shot `opencode acp` through this simulator rather than by borrowing the connection
+// opened above — so this step also proves the live bridge survives a probe running beside it.
+await send({
+  jsonrpc: "2.0",
+  id: 2,
+  method: "agent/list_models",
+  params: { cwd: Deno.cwd() },
+});
 const models = await waitFor(
   (message) => message.id === 2,
   "agent/list_models",
 );
+if (models.error !== undefined) {
+  throw new Error(`agent/list_models failed: ${JSON.stringify(models.error)}`);
+}
 const modelList = ((models.result ?? {}) as { models?: unknown[] }).models ??
   [];
 console.log(

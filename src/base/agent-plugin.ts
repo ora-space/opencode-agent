@@ -29,6 +29,17 @@ export interface RunAgentPluginOptions {
 }
 
 /**
+ * Names the Workspace one model discovery call is answering for.
+ *
+ * Discovery happens outside any session, so this directory is the only thing telling a plugin
+ * which project it is being asked about — a catalog that depends on the project's own
+ * configuration cannot be resolved without it.
+ */
+export interface AgentListModelsContext {
+  readonly cwd: string;
+}
+
+/**
  * Maps every class method onto the JSON-RPC method the Ora host invokes.
  *
  * The host contract fixes the wire names, so the mapping is explicit rather than derived from the
@@ -82,8 +93,10 @@ export abstract class AgentPlugin {
   /** [agent/acp] Receives one ACP frame the host is forwarding to the agent. */
   abstract onAcp(frame: JsonValue): void | Promise<void>;
 
-  /** [agent/list_models] Lists selectable models before any session exists. */
-  abstract onListModels(): AgentModel[] | Promise<AgentModel[]>;
+  /** [agent/list_models] Lists the models selectable in one Workspace before any session exists. */
+  abstract onListModels(
+    context: AgentListModelsContext,
+  ): AgentModel[] | Promise<AgentModel[]>;
 
   // ------------------------- optional agent contract ---------------------------
 
@@ -128,8 +141,8 @@ export async function runAgentPlugin(
         | Promise<void>,
     stop: () =>
       invoke(routes, AGENT_METHOD_ROUTES.onStop) as void | Promise<void>,
-    listModels: () =>
-      invoke(routes, AGENT_METHOD_ROUTES.onListModels) as
+    listModels: (context) =>
+      invoke(routes, AGENT_METHOD_ROUTES.onListModels, context) as
         | AgentModel[]
         | Promise<AgentModel[]>,
     onAcp: (frame) =>

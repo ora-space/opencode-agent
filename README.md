@@ -12,8 +12,9 @@ conversation runs against the OpenCode CLI through its native
   you have installed.
 - Starts and stops the OpenCode CLI automatically as you switch agents — nothing
   to run by hand.
-- Streams OpenCode's models, sessions, and responses straight through to Ora's
-  UI via ACP, including the in-session model picker.
+- Streams OpenCode's sessions and responses straight through to Ora's UI via
+  ACP, including the in-session model picker, and answers Ora's pre-session
+  model list from OpenCode itself (see [Model discovery](#model-discovery)).
 - Ships with the OpenCode CLI bundled inside the package, so there is nothing
   else to install.
 
@@ -31,13 +32,43 @@ conversation runs against the OpenCode CLI through its native
 - If you'd rather run your own build of OpenCode instead of the bundled one, set
   `ORA_OPENCODE_BIN` to its full path. It wins over both of the above.
 
+### Host requirement
+
+This plugin needs an Ora that sends the workspace `cwd` with
+`agent/list_models`. Without it there is no directory to discover models for,
+and the plugin answers `-32602` naming the missing parameter rather than probing
+against nothing.
+
+That requirement is deliberately **not** declared in `orax.toml`, even though
+the schema has the right field for it:
+
+```toml
+[dependencies]
+ora = ">= x.y.z"
+```
+
+Ora parses and validates that table (only `ora` is accepted in it), so it is
+where a host requirement belongs — but the host version carrying the parameter
+does not exist yet. Ora is at 0.1.0 and the parameter is an unreleased change,
+so any number written here today would either be false or vacuous, and a
+requirement no host satisfies would make the plugin uninstallable the moment Ora
+starts enforcing the field. Fill it in once there is a real host version to
+name.
+
+Note that the plugin SDK's version and Ora's are separate lines. This plugin
+builds against SDK 0.9.0; that is not an Ora version. The `package.json` this
+repository used to carry declared `engines.ora >= 0.8.0` — an SDK version in a
+host-version field, in a file no Ora release has ever read —
+`scripts/package.ts` has never staged it into a `.orax`. It has been removed
+rather than corrected.
+
 ## Installing
 
 Grab the latest `.orax` package from this repository's
 [Releases](../../releases) page, or build one yourself (see below), and drop it
 into Ora's plugins directory (`<ORA_DATA_DIR>/plugins/`) — Ora discovers any
-folder there with a `package.json` automatically. Deleting the folder removes
-the agent again; there's no other install step.
+folder there with an `orax.toml` automatically. Deleting the folder removes the
+agent again; there's no other install step.
 
 On Windows, if you keep your installed plugins elsewhere, a junction can point
 Ora's plugins directory at them:
@@ -94,9 +125,52 @@ against your own OpenCode instead.
 
 `deno task check` type checks and `deno task lint` lints the sources.
 
+### Building against an unpublished SDK
+
+`deno.json` pins `@ora-space/plugin-sdk@0.9.0`, the first release whose
+`agent/list_models` carries the workspace `cwd` that
+[model discovery](#model-discovery) needs. Until that version is on JSR every
+task fails to resolve it, which is the honest signal and is not worked around in
+CI. To build and simulate in the meantime, copy `deno.json` to a git-ignored
+`deno.local.json`, point its `@ora-space/plugin-sdk` import at the SDK sources
+in a desktop checkout, and run tasks through it:
+
+```
+deno task -c deno.local.json check
+deno task -c deno.local.json build
+deno task -c deno.local.json simulate
+```
+
+Each task in that file has to repeat `-c deno.local.json` inside its own
+command: `deno task -c` chooses which task list to read but does not reach the
+command it runs, which would otherwise rediscover `deno.json` and fail on the
+unpublished pin. Give it a `"lock": "deno.local.lock"` too, so a local build
+does not rewrite the committed lockfile.
+
+## Model discovery
+
+OpenCode has no way to list its models outside a session: its real catalog — the
+display names, the grouping, and which model is currently selected — is the
+session configuration the CLI computes from your providers and config file. So
+when Ora asks this plugin for the models available in a workspace, the plugin
+starts a second, throwaway `opencode acp` in that directory, runs `initialize` →
+`session/new` on it, reads the model selector out of the answer, deletes the
+probe session if the CLI says it can, and kills the process.
+
+It has to be a separate process. The connection Ora holds is one Ora owns both
+ends of: a request injected into it would return its answer down Ora's pipe, and
+the client capabilities Ora declares in its own `initialize` are what decide
+whether OpenCode reports a model selector at all.
+
+Answers are reused for a minute per workspace, so a picker that re-renders does
+not restart the CLI, while a model that appears after a provider login shows up
+the next time the picker is opened.
+
 ## Known limits
 
-- The model list is cached for the process lifetime, so models that appear after
-  a provider login need a plugin restart.
+- Each model discovery leaves one empty session behind in OpenCode's own session
+  list. OpenCode advertises `session/close`, `session/fork`, `session/list`, and
+  `session/resume`, but not `session/delete`, so the probe has nothing to clean
+  up with; the one-minute cache is what keeps the count down.
 - Killing the CLI on agent stop is best effort; Ora retains process-tree reaping
   as a backstop.

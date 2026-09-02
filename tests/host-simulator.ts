@@ -301,7 +301,6 @@ async function dispatchChildProcessMethod(
           cwd,
           env: {
             ...requestedEnvironment,
-            ORA_MCP_SIMULATED: "host-only-test-value",
           },
           stdin: "piped",
           stdout: "piped",
@@ -426,7 +425,6 @@ const resourceSignatures = effectResources.map((resource) =>
   `${resource.workspaceRelativePath}:${resource.materializationFormat}`
 ).sort();
 const expectedResourceSignatures = [
-  ".opencode/opencode.json:ora/opencode-mcp-config.v1",
   ".opencode/skills:ora/skill-directory.v1",
 ];
 if (
@@ -513,7 +511,7 @@ console.log(
 // from these, so any stable pair drives the same code the host would.
 const coordinationParams = {
   targetId: "sim-target",
-  resourceIds: ["sim-skills", "sim-mcp"],
+  resourceIds: ["sim-skills"],
 };
 
 await send({

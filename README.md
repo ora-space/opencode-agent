@@ -103,7 +103,8 @@ against your own OpenCode instead.
 
 ## Project Effects
 
-Ora manages both `.opencode/skills` and the `mcp` entries in
-`.opencode/opencode.json` as one target projection. User-owned JSON/JSONC
-content is preserved, MCP secrets remain in Ora's configuration store, and
-OpenCode is quiesced and restarted once after all safe mutations complete.
+Ora manages `.opencode/skills` as a Skill Effect Resource. Configured MCP
+plugins are not written into `.opencode/opencode.json`; Ora injects them through
+ACP `session/new` and `session/load` `mcpServers`, which this plugin forwards
+unchanged. Secret values stay in Ora's configuration store and never appear in
+Workspace files, logs, or `ORA_MCP_*` environment variables.

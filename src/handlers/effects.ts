@@ -21,15 +21,6 @@ export const SKILLS_RESOURCE: EffectResourceDeclaration = {
   coordination: "quiesce_before_mutation",
 };
 
-/** The shared project MCP file OpenCode reads at startup. */
-export const MCP_RESOURCE: EffectResourceDeclaration = {
-  workspaceRelativePath: ".opencode/opencode.json",
-  // SDK 0.8 narrows this field to Skills even though the host protocol already accepts MCP.
-  materializationFormat:
-    "ora/opencode-mcp-config.v1" as typeof SKILL_DIRECTORY_V1,
-  coordination: "quiesce_before_mutation",
-};
-
 const SESSION_PROMPT_METHOD = "session/prompt";
 
 /** The code this plugin reports a Consumer call it cannot satisfy right now under. */
@@ -73,7 +64,7 @@ export class AgentEffectCoordinator {
   }
 
   readonly definition: AgentEffectDefinition = {
-    resources: [SKILLS_RESOURCE, MCP_RESOURCE],
+    resources: [SKILLS_RESOURCE],
     coordinate: (context) => this.#coordinate(context),
     reactivate: (context) => this.#reactivate(context),
     verifyReady: (context) => this.#verifyReady(context),
@@ -186,7 +177,7 @@ export class AgentEffectCoordinator {
     if (!this.#client.running) {
       throw new PluginMethodError(
         CONSUMER_NOT_READY,
-        "the OpenCode CLI is not running, so it has read neither Skills nor MCP configuration",
+        "the OpenCode CLI is not running, so it has not read project Skills",
       );
     }
     if (this.#held !== undefined) {

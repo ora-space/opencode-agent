@@ -145,9 +145,9 @@ ends of: a request injected into it would return its answer down Ora's pipe, and
 the client capabilities Ora declares in its own `initialize` are what decide
 whether OpenCode reports a model selector at all.
 
-Answers are reused for five minutes per workspace, so a picker that re-renders does
-not restart the CLI, while a model that appears after a provider login shows up
-the next time the picker is opened.
+Answers are reused for five minutes per workspace, so a picker that re-renders
+does not restart the CLI, while a model that appears after a provider login
+shows up the next time the picker is opened.
 
 ## Known limits
 

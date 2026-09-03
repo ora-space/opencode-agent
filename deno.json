@@ -13,7 +13,7 @@
   "tasks": {
     "check": "deno check src/main.ts scripts/package.ts tests/host-simulator.ts",
     "lint": "deno lint src scripts tests bundle.config.ts",
-    "format": "deno fmt src scripts tests bundle.config.ts deno.json README.md",
+    "format": "deno fmt src scripts tests bundle.config.ts deno.json README.md AGENTS.md",
     "simulate": "deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts",
     "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts",
     "build": "deno bundle src/main.ts -o dist/main.js",

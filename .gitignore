@@ -7,13 +7,10 @@ dist/
 # target at package time. Scoped to `bin/` so genuine static assets stay committable.
 assets/bin/
 
-# package.json is the legacy Ora manifest and declares no dependencies, but its presence makes a
-# stray `npm install` plausible.
+# Nothing here is an npm package — `orax.toml` is the manifest and Deno is the runtime — but a
+# stray `npm install` in this directory would still leave both of these behind.
 node_modules/
 package-lock.json
-
-# Local-only Deno config, for overriding an unpublished @ora-space/plugin-sdk with `links`.
-deno.local.json
 
 # OS and editor noise
 .DS_Store

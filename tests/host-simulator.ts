@@ -71,9 +71,11 @@ async function* decodeFrames(
   }
 }
 
-// The long-lived ACP server is no longer spawned by the plugin itself (this simulator, playing
-// the host, does that instead — see `ora/childprocess/*` below), but `--allow-run` is still
-// needed for the plugin's own one-shot `opencode models` invocation in handlers/models.ts.
+// Exactly what Ora grants an agent plugin (see `permissions::agent_permissions`), not what this
+// plugin turns out to need: no process here is spawned by the plugin any more — both the ACP
+// server and the discovery probe go through `ora/childprocess/*` below, which this simulator
+// serves — and running with a narrower set than production would hide a permission fault instead
+// of reproducing it.
 const HOST_PERMISSIONS = [
   "--no-prompt",
   "--allow-run",
@@ -82,10 +84,13 @@ const HOST_PERMISSIONS = [
   "--allow-net",
 ];
 
-/** Converts this module-relative URL into a host path, including a Windows drive prefix. */
-const entrypoint = decodeURIComponent(
-  new URL("../src/main.ts", import.meta.url).pathname,
-).replace(/^\/([A-Za-z]:)/, "$1");
+/** Converts one module-relative URL into a host path, including a Windows drive prefix. */
+function modulePath(relative: string): string {
+  return decodeURIComponent(new URL(relative, import.meta.url).pathname)
+    .replace(/^\/([A-Za-z]:)/, "$1");
+}
+
+const entrypoint = modulePath("../src/main.ts");
 const child = new Deno.Command(Deno.execPath(), {
   args: ["run", ...HOST_PERMISSIONS, entrypoint],
   stdin: "piped",
@@ -494,11 +499,22 @@ console.log(
   }`,
 );
 
-await send({ jsonrpc: "2.0", id: 2, method: "agent/list_models", params: {} });
+// Discovery names the Workspace it is answering for, and the plugin answers it by running a
+// second, one-shot `opencode acp` through this simulator rather than by borrowing the connection
+// opened above — so this step also proves the live bridge survives a probe running beside it.
+await send({
+  jsonrpc: "2.0",
+  id: 2,
+  method: "agent/list_models",
+  params: { cwd: Deno.cwd() },
+});
 const models = await waitFor(
   (message) => message.id === 2,
   "agent/list_models",
 );
+if (models.error !== undefined) {
+  throw new Error(`agent/list_models failed: ${JSON.stringify(models.error)}`);
+}
 const modelList = ((models.result ?? {}) as { models?: unknown[] }).models ??
   [];
 console.log(

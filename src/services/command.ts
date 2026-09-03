@@ -17,14 +17,20 @@ const BINARY_NAME = "opencode";
  *
  * Deliberately not derived from `bundledBinaryPath()`: the name upstream publishes the binary
  * under and the names a user's own install answers to are independent facts that only happen to
- * overlap today. Windows gets three because installers disagree on what they put on PATH — a
- * native `opencode.exe`, the `opencode.cmd` shim npm and bun write, or an extensionless launcher
- * — and the host's PATH lookup appends `.exe` to a bare name rather than trying the others. The
- * `.exe` is tried first so the process Ora holds is the CLI itself rather than a batch shim.
+ * overlap today. Windows installers disagree about what they put on PATH, and the host's PATH lookup only
+ * appends `.exe` to a bare name — it does not try the others — so every spelling a real
+ * installer produces has to be named here or the CLI is reported missing on a machine that
+ * has it. The order follows Windows' own `PATHEXT` precedence: `.exe` first, so the process
+ * the host ends up holding is the CLI itself rather than a shell wrapper around it.
  */
 function pathCommands(): string[] {
   return Deno.build.os === "windows"
-    ? [`${BINARY_NAME}.exe`, `${BINARY_NAME}.cmd`, BINARY_NAME]
+    ? [
+      `${BINARY_NAME}.exe`,
+      `${BINARY_NAME}.cmd`,
+      `${BINARY_NAME}.bat`,
+      BINARY_NAME,
+    ]
     : [BINARY_NAME];
 }
 

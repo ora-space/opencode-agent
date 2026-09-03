@@ -1,7 +1,7 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@ora-space/plugin-sdk@0.8.0": "0.8.0",
+    "jsr:@ora-space/plugin-sdk@0.9.0": "0.9.0",
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/cli@^1.0.32": "1.0.32",
     "jsr:@std/fmt@^1.0.10": "1.0.10",
@@ -13,8 +13,8 @@
     "jsr:@zip-js/zip-js@^2.8.61": "2.8.61"
   },
   "jsr": {
-    "@ora-space/plugin-sdk@0.8.0": {
-      "integrity": "22a3d97572b49755a8b087f73219aa34b0b4fcb42d6e1940498b928e3c732b6a"
+    "@ora-space/plugin-sdk@0.9.0": {
+      "integrity": "667d812ea8ec87b0976f2bc6ed00e9915e7fa170e3f3793ad46e4087e36cdcfd"
     },
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
@@ -52,11 +52,14 @@
     },
     "@zip-js/zip-js@2.8.61": {
       "integrity": "8da37318aeefa76faa915058722ab8d1ee51e068edc8be69ea0810e01d724955"
+    },
+    "@zip-js/zip-js@2.9.0": {
+      "integrity": "67e3f997e7791c1822a4a57c1af7b2faa65334f01f22184d188768003414036c"
     }
   },
   "workspace": {
     "dependencies": [
-      "jsr:@ora-space/plugin-sdk@0.8.0",
+      "jsr:@ora-space/plugin-sdk@0.9.0",
       "jsr:@std/cli@^1.0.32",
       "jsr:@std/path@^1.1.6",
       "jsr:@std/tar@~0.1.10",

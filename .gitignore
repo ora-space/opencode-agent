@@ -12,6 +12,9 @@ assets/bin/
 node_modules/
 package-lock.json
 
+# Local provider config copied from src/services/provider-env.ts; not meant to be committed.
+config.toml
+
 # OS and editor noise
 .DS_Store
 Thumbs.db

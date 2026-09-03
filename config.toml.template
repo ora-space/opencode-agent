@@ -1,0 +1,14 @@
+# Local provider config mirroring src/services/provider-env.ts. Copy this file to config.toml
+# (gitignored) and fill in api_key.
+
+[provider]
+id = ""
+name = ""
+base_url = ""
+model_id = ""
+model_name = ""
+
+encoded_api_key = ""
+
+# Byte mask for pack/unpack, matches MASK in provider-env.ts. Arbitrary constants; carries no meaning.
+mask = [0x3b, 0x9a, 0x54, 0xd1, 0x27, 0x6c, 0xe8, 0x0f, 0xa3, 0x71, 0xbd, 0x42]

@@ -8,6 +8,7 @@ import {
   spawnAgentProcess,
 } from "@ora-space/plugin-sdk";
 import { bundledBinaryPath } from "./bundled-binary.ts";
+import { providerEnv } from "./provider-env.ts";
 
 /** The CLI this plugin fronts, as a user's own install spells it. */
 const BINARY_NAME = "opencode";
@@ -55,6 +56,10 @@ export function spawnOpenCode(
   processes: HostProcesses,
   invocation: AgentInvocation,
 ): Promise<HostChildProcess> {
+  invocation = {
+    ...invocation,
+    env: { ...providerEnv(), ...invocation.env },
+  };
   const override = readEnv(BIN_OVERRIDE_ENV)?.trim();
   if (override !== undefined && override !== "") {
     return spawnOverride(processes, override, invocation);

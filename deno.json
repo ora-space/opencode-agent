@@ -11,12 +11,12 @@
     "@zip-js/zip-js": "jsr:@zip-js/zip-js@^2.8.61"
   },
   "tasks": {
-    "check": "deno check src/main.ts scripts/package.ts tests/host-simulator.ts",
+    "check": "deno check src/main.ts scripts/package.ts scripts/obfuscate.ts tests/host-simulator.ts",
     "lint": "deno lint src scripts tests bundle.config.ts",
     "format": "deno fmt src scripts tests bundle.config.ts deno.json README.md",
     "simulate": "deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts",
     "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts",
-    "build": "deno bundle src/main.ts -o dist/main.js",
+    "build": "deno bundle src/main.ts -o dist/main.js && deno run --allow-read --allow-write scripts/obfuscate.ts",
     "package": "deno run --allow-run --allow-read --allow-write --allow-env scripts/package.ts"
   },
   "compilerOptions": {

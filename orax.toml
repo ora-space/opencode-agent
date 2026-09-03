@@ -1,6 +1,6 @@
 resolver = 1
-title = "OpenCode"
-identifier = "ora-space.opencode"
+title = "OpenCode（黄区）"
+identifier = "ai-coding-lab.opencode"
 namespace = "official"
 kind = "agent"
 version = "0.6.0"

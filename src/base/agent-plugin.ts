@@ -8,6 +8,7 @@ import {
   defineAgent,
   type HostProcesses,
   type JsonValue,
+  type TraceProviderDeclaration,
 } from "@ora-space/plugin-sdk";
 
 /**
@@ -112,6 +113,9 @@ export abstract class AgentPlugin {
    * handler module the same way `onStart` and friends are mounted above.
    */
   effects: AgentEffectDefinition | undefined = undefined;
+
+  /** Trace files this provider writes; Ora resolves these only for authorized consumers. */
+  traceProviders: readonly TraceProviderDeclaration[] = [];
 }
 
 /** One entry of the flattened dispatch table, already bound to its plugin instance. */
@@ -150,6 +154,7 @@ export async function runAgentPlugin(
         | void
         | Promise<void>,
     effects: plugin.effects,
+    traceProviders: plugin.traceProviders,
   });
   const processes = createHostProcesses(definition);
   await plugin.onActivate({ pluginId: options.pluginId, processes });

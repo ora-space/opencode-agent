@@ -301,11 +301,15 @@ async function buildRelease(
   identifier: string,
   tag: string,
   repo: string,
+  target: string | undefined,
 ): Promise<string> {
   const base = `https://github.com/${repo}/releases/download/${tag}`;
   let manifest = (await Deno.readTextFile("orax.toml")).trimEnd();
 
   if (config.cli === "user_installed") {
+    if (target !== undefined) {
+      throw new Error("--target is only valid for a bundled CLI package");
+    }
     const fileName = `${identifier}-${tag}.orax`;
     await buildUniversalPackage(fileName);
     const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
@@ -330,7 +334,13 @@ async function buildRelease(
   );
   console.log(`Bundling ${config.upstream} ${upstreamTag}`);
 
-  for (const [triple, asset] of Object.entries(config.assets)) {
+  const targets = Object.entries(config.assets).filter(([triple]) =>
+    target === undefined || triple === target
+  );
+  if (targets.length === 0) {
+    throw new Error(`bundle.config.ts declares no target ${target}`);
+  }
+  for (const [triple, asset] of targets) {
     const plan: TargetPlan = {
       triple,
       asset,
@@ -350,7 +360,7 @@ async function buildRelease(
 }
 
 async function main(): Promise<void> {
-  const flags = parseArgs(Deno.args, { string: ["tag", "repo"] });
+  const flags = parseArgs(Deno.args, { string: ["tag", "repo", "target"] });
   const tag = flags.tag ?? Deno.env.get("GITHUB_REF_NAME");
   const repo = flags.repo ?? Deno.env.get("GITHUB_REPOSITORY");
   if (tag === undefined || repo === undefined) {
@@ -360,7 +370,7 @@ async function main(): Promise<void> {
   const identifier = await manifestField("identifier");
   await Deno.mkdir(PACKAGES_DIR, { recursive: true });
 
-  const manifest = await buildRelease(identifier, tag, repo);
+  const manifest = await buildRelease(identifier, tag, repo, flags.target);
 
   // The marketplace index needs the release form of the manifest, which carries the download URLs
   // and digests. It is only knowable once the packages exist, so it is generated here rather than

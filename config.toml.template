@@ -1,5 +1,4 @@
-# Local provider config mirroring src/services/provider-env.ts. Copy this file to config.toml
-# (gitignored) and fill in api_key.
+# Local provider config. Copy this file to config.toml (gitignored) and fill in the values.
 
 [provider]
 id = ""

@@ -25,6 +25,10 @@ key，它只能防止 key 以明文被 grep 到，仅此而已。如果要求 ke
 
 ## 配置 provider
 
+> OpenCode v1 会静默忽略 v2 的 `providers/package/settings` 字段。构建会通过
+> `verify-opencode-v1-config` 检查最终 bundle；背景见
+> [复盘：OpenCode v2 配置字段被 v1 CLI 静默忽略](docs/postmortem/2026-09-07-opencode-config-version-silently-ignored.md)。
+
 复制 `config.toml.template` 为 `config.toml`，然后填写 `[provider]`：
 
 ```toml

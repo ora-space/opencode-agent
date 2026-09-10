@@ -44,3 +44,18 @@ jobs:
             dist/packages/*.orax dist/manifest.toml \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes
+
+  # A direct call, not the `release` event: `gh release create` above uses this run's own
+  # `GITHUB_TOKEN`, and GitHub does not fire `release` events for another workflow to catch when
+  # the actor is the token of the same run — that would be a recursive trigger. Guarded the same
+  # way as the release step itself: a non-tag ref (a manual dispatch on a branch, say) never
+  # created a release for this to publish.
+  publish:
+    needs: release
+    if: needs.release.result == 'success' && github.ref_type == 'tag'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/marketplace.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

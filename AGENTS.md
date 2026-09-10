@@ -255,6 +255,41 @@ ora = ">= x.y.z"
 Ora parses and validates that table today but does not yet enforce it, and the
 host version is not the SDK version — do not fill it with an SDK number.
 
+## Publishing to the marketplace
+
+A release is not installable until `registry/o/ora-space.opencode/orax.toml` in
+`ora-space/marketplace` points at it. `release.yml` calls `marketplace.yml` as a
+reusable workflow the moment its own release job succeeds on a tag — a direct
+`workflow_call`, not the `release` event, because `gh release create` runs under
+this repository's own `GITHUB_TOKEN`, and GitHub does not fire `release` events
+for another workflow to catch when the actor is the token of the same run.
+`marketplace.yml` also runs on `workflow_dispatch` for the latest release or a
+specific tag, which is how to pick up an entry that drifted behind for any other
+reason. Either way it copies the release's `manifest.toml` in verbatim as the
+registry entry, along with `README.md` and every logo asset the plugin carries
+(`logo.svg`, any themed variant such as `logo.dark.svg`, and any raster format).
+It never merges anything — a human still reviews and merges the PR in the
+marketplace repo.
+
+The branch is one per plugin (`release/ora-space.opencode`) and force-pushed,
+not one per tag: branching per tag would stack up an open PR per release the
+moment two releases in a row produced one, all editing the same file. An
+unmerged PR is retargeted at the newer release instead. The push needs the
+organization's `MARKETPLACE_SYNC_APP_ID` / `MARKETPLACE_SYNC_APP_PRIVATE_KEY`
+app credentials, because `GITHUB_TOKEN` is scoped to this repository and cannot
+write to the marketplace. Those credentials are shared with selected
+repositories only, so this repository can simply be off that list — the workflow
+checks for them up front and stops with a run summary naming what is missing
+rather than reaching `create-github-app-token` and failing on an opaque token
+error. A run that says "Not published" is that check, not a bug.
+
+Unlike the sibling `claude-code-agent` and `codex-agent`, `release.yml` here has
+no `workflow_call` trigger of its own and no step that checks the tag against
+`orax.toml`'s `version` — there is no upstream watcher calling this one the way
+`upstream.yml` calls theirs. Bump `orax.toml` `version` to match the tag before
+pushing it; nothing else catches a mismatch until `marketplace.yml` errors on a
+manifest that disagrees with the tag.
+
 ## Working on this repository
 
 - `deno task check` / `lint` / `format` / `simulate` / `build` / `package`.
@@ -265,9 +300,12 @@ host version is not the SDK version — do not fill it with an SDK number.
   and lint stays meaningful even while that fails.
 - The SDK is imported from its published JSR package and pinned in `deno.json`;
   keep `deno.lock` synchronized when changing the SDK version.
-- `.github/workflows/*.yml` and `scripts/package.ts` know nothing about OpenCode
-  and are meant to be copied to another agent plugin unchanged, with only
-  `bundle.config.ts` rewritten. Keep them generic.
+- `scripts/package.ts` knows nothing about OpenCode and is meant to be copied to
+  another agent plugin unchanged, with only `bundle.config.ts` rewritten.
+  `.github/workflows/marketplace.yml` is fully generic too and was copied
+  verbatim from the sibling `codex-agent`. `.github/workflows/release.yml`
+  carries the `publish` job that calls it, but is otherwise plugin-agnostic.
+  Keep them generic.
 - Bump `orax.toml` `version` before handing someone a `.orax` to import.
   `install_local` refuses a version that is already installed and never retires
   older ones, so reusing a number silently leaves the old code running.

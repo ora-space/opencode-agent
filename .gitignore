@@ -12,6 +12,10 @@ assets/bin/
 node_modules/
 package-lock.json
 
+# Local provider config for `services/provider-env.ts` (see its header comment): carries a packed
+# API key. Never committed.
+config.toml
+
 # OS and editor noise
 .DS_Store
 Thumbs.db

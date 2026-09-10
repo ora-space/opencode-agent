@@ -1,0 +1,216 @@
+name: Marketplace
+
+# Opens — or refreshes — the pull request that publishes the latest release into
+# `ora-space/marketplace`. Publishing is kept separate from releasing so a bad release can be
+# superseded before anyone installs it. `release.yml` calls this workflow the moment it publishes a
+# release, and it can also be run by hand — for the latest release or a specific tag — to pick up an
+# entry that drifted behind for any other reason.
+#
+# This is `workflow_call`, not `on: release`, because a release created with the repository's
+# `GITHUB_TOKEN` — which is how `release.yml` always creates one — does not fire a `release` event
+# for another workflow to catch; GitHub suppresses that to prevent recursive runs. A direct call is
+# the reliable way to chain onto a release this repository just made.
+# Nothing is merged here; a human still reviews the PR in the marketplace repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to publish. Defaults to the latest release.
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to publish. Defaults to the latest release.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # `MARKETPLACE_SYNC_APP_ID` and `MARKETPLACE_SYNC_APP_PRIVATE_KEY` are organization-level and shared with selected repositories
+      # only, so this repository can be off that list — expected configuration waiting on an owner,
+      # not a broken workflow. Without this, every run would fail on an opaque token error.
+      # `secrets` cannot be read from a step `if:`, hence the bounce through an output.
+      - name: Check for the marketplace credentials
+        id: credentials
+        env:
+          MARKETPLACE_SYNC_APP_ID: ${{ vars.MARKETPLACE_SYNC_APP_ID }}
+          MARKETPLACE_SYNC_APP_PRIVATE_KEY: ${{ secrets.MARKETPLACE_SYNC_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          MISSING=
+          [ -n "${MARKETPLACE_SYNC_APP_ID:-}" ] || MISSING="${MISSING} vars.MARKETPLACE_SYNC_APP_ID"
+          [ -n "${MARKETPLACE_SYNC_APP_PRIVATE_KEY:-}" ] || MISSING="${MISSING} secrets.MARKETPLACE_SYNC_APP_PRIVATE_KEY"
+          if [ -z "$MISSING" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::nothing will be published:${MISSING} is not available here"
+          {
+            echo "## Not published"
+            echo
+            echo "\`${MISSING# }\` is not available to \`${GITHUB_REPOSITORY}\`."
+            echo
+            echo "Ask an \`ora-space\` owner to add this repository to the visibility list of the"
+            echo "organization's \`MARKETPLACE_SYNC_APP_ID\` variable and \`MARKETPLACE_SYNC_APP_PRIVATE_KEY\` secret. Everything"
+            echo "below ran; only the marketplace pull request was skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve the release to publish
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${REQUESTED_TAG:-}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a release tag: ${TAG}"
+            exit 1
+          fi
+          ID=$(grep -m1 '^identifier *=' orax.toml | sed -E 's/^identifier *= *"(.*)"/\1/')
+          TITLE=$(grep -m1 '^title *=' orax.toml | sed -E 's/^title *= *"(.*)"/\1/')
+          {
+            echo "tag=${TAG}"
+            echo "version=${TAG#v}"
+            echo "id=${ID}"
+            echo "title=${TITLE}"
+            echo "dir=registry/${ID:0:1}/${ID}"
+          } >> "$GITHUB_OUTPUT"
+          echo "publishing ${TITLE} ${TAG} as ${ID}"
+
+      # The registry entry is the release's own manifest, copied verbatim: it already records the
+      # URLs and SHA-256 of the artifacts that were actually published.
+      - name: Download the release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern manifest.toml \
+            --dir dist \
+            --clobber
+          MANIFEST_VERSION=$(grep -m1 '^version *=' dist/manifest.toml | sed -E 's/^version *= *"(.*)"/\1/')
+          if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+            echo "::error::${TAG} ships a manifest for ${MANIFEST_VERSION}"
+            exit 1
+          fi
+
+      # `GITHUB_TOKEN` cannot write to another repository, so the push borrows a short-lived
+      # installation token from the organization's app rather than a long-lived PAT.
+      - name: Create a marketplace token
+        id: app-token
+        if: steps.credentials.outputs.ready == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.MARKETPLACE_SYNC_APP_ID }}
+          private-key: ${{ secrets.MARKETPLACE_SYNC_APP_PRIVATE_KEY }}
+          owner: ora-space
+          repositories: marketplace
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Clone the marketplace
+        if: steps.credentials.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/ora-space/marketplace.git" marketplace
+
+      # One branch per plugin, force-pushed. Branching per tag would leave an open PR per release
+      # as soon as two releases in a row produced one, all conflicting on the same file.
+      - name: Open or refresh the marketplace pull request
+        if: steps.credentials.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          ID: ${{ steps.release.outputs.id }}
+          TITLE: ${{ steps.release.outputs.title }}
+          DIR: ${{ steps.release.outputs.dir }}
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -m1 '^version *=' "marketplace/${DIR}/orax.toml" 2>/dev/null | sed -E 's/^version *= *"(.*)"/\1/' || true)
+          if [ "$CURRENT" = "$VERSION" ]; then
+            echo "the marketplace already publishes ${TITLE} ${TAG}"
+            exit 0
+          fi
+          # An entry ahead of the newest release is not a state this workflow can have produced,
+          # and quietly proposing a downgrade would be worse than stopping.
+          if [ -n "$CURRENT" ]; then
+            NEWEST=$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)
+            if [ "$NEWEST" != "$VERSION" ]; then
+              echo "::error::the marketplace publishes ${CURRENT}, which is ahead of the latest release ${VERSION}"
+              exit 1
+            fi
+          fi
+
+          BRANCH="release/${ID}"
+          cd marketplace
+          git checkout -B "$BRANCH"
+          mkdir -p "$DIR"
+          cp ../dist/manifest.toml "${DIR}/orax.toml"
+          cp ../README.md "${DIR}/README.md"
+
+          # The bare logo, plus any themed variant (`logo.dark.svg`) and raster format the plugin
+          # carries. Cleared first so a variant the plugin has since dropped does not linger.
+          rm -f "${DIR}"/logo.*
+          shopt -s nullglob
+          for f in ../logo.svg ../logo.*.svg ../logo.png ../logo.*.png ../logo.jpg ../logo.*.jpg \
+            ../logo.jpeg ../logo.*.jpeg ../logo.webp ../logo.*.webp; do
+            # `nullglob` only elides a wildcard pattern that matched nothing; the bare names in
+            # this list (`../logo.svg`) have no wildcard, so they survive it and still need this
+            # check when the plugin does not ship that format.
+            [ -f "$f" ] && cp "$f" "${DIR}/$(basename "$f")"
+          done
+          shopt -u nullglob
+
+          git add "$DIR"
+          if git diff --cached --quiet; then
+            echo "the marketplace entry is already identical to ${TAG}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update ${TITLE} to ${TAG}"
+          git push --force origin "$BRANCH"
+
+          SUBJECT="chore: update ${TITLE} to ${TAG}"
+          BODY=$(printf '%s\n\n%s\n\n%s\n' \
+            "Publishes \`${ID}\` ${TAG}, from [that release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})." \
+            "\`orax.toml\` is the release's own \`manifest.toml\` copied verbatim, so the per-target download URLs and SHA-256 digests are the ones the release workflow recorded for the artifacts it published. \`README.md\` and its logo assets (\`logo.svg\`, any themed variant, and any raster format) are copied from the plugin repository at that tag." \
+            "Opened automatically by \`.github/workflows/marketplace.yml\`.")
+
+          NUMBER=$(gh pr list --repo ora-space/marketplace --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
+          if [ -z "$NUMBER" ]; then
+            NUMBER=$(gh pr create --repo ora-space/marketplace --base main --head "$BRANCH" \
+              --title "$SUBJECT" --body "$BODY")
+          else
+            gh pr edit "$NUMBER" --repo ora-space/marketplace --title "$SUBJECT" --body "$BODY"
+          fi
+          echo "${TITLE}: ${CURRENT:-none} -> ${TAG} — ${NUMBER}" >> "$GITHUB_STEP_SUMMARY"

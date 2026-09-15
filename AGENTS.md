@@ -240,6 +240,36 @@ nothing.
   reported once and not retried; `-32000` is how an Effect Consumer says "not
   ready right now".
 
+## Releasing
+
+`deno task package --tag <tag> --repo <owner/name>` writes
+`dist/packages/*.orax` **and `dist/manifest.toml`**, the release form of the
+manifest — `orax.toml` plus the download `url` and `sha256` per target — which
+is what gets copied into the marketplace index. Both are uploaded by
+`.github/workflows/release.yml`. Publishing only the `.orax` files leaves the
+marketplace with nothing to point at.
+
+`bundle.config.ts` declares `cli: "bundled"`, the upstream GitHub repository,
+and which release asset serves each target triple. `upstream.lock.json` pins the
+exact OpenCode release tag and, per target, the SHA-256 GitHub itself computed
+for that asset (the Releases API's `digest` field on each asset — the same role
+npm's `dist.integrity` plays for the sibling `claude-code-agent` and
+`codex-agent`). `scripts/package.ts` downloads only the tag the lock names,
+verifies the downloaded archive against the pinned digest before extracting it,
+and emits one `.orax` plus one `[[targets]]` record per target.
+
+`deno task sync --check` exits 20 when the committed lock is behind the upstream
+repository's latest release. The nightly `upstream.yml` treats only that code as
+an update, commits the refreshed lock with a bumped `orax.toml` patch version,
+tags it, then calls the reusable `release.yml`. Packaging must never resolve
+"latest" itself; rebuilding an existing tag must use only its committed lock —
+that is what makes a rebuild of a tag reproduce exactly the release it already
+shipped.
+
+Bump `orax.toml` `version` before tagging: `install_local` refuses a version
+that is already installed and never retires older ones, so reusing a number
+silently leaves the old code running.
+
 ## Manifest
 
 `orax.toml` is the manifest Ora reads. There is no `package.json` — it was a
@@ -283,16 +313,17 @@ checks for them up front and stops with a run summary naming what is missing
 rather than reaching `create-github-app-token` and failing on an opaque token
 error. A run that says "Not published" is that check, not a bug.
 
-Unlike the sibling `claude-code-agent` and `codex-agent`, `release.yml` here has
-no `workflow_call` trigger of its own and no step that checks the tag against
-`orax.toml`'s `version` — there is no upstream watcher calling this one the way
-`upstream.yml` calls theirs. Bump `orax.toml` `version` to match the tag before
-pushing it; nothing else catches a mismatch until `marketplace.yml` errors on a
-manifest that disagrees with the tag.
+Like the sibling `claude-code-agent` and `codex-agent`, `release.yml` here also
+accepts `workflow_call` and checks the tag against `orax.toml`'s `version`
+before packaging anything — see "Releasing" above for the `upstream.yml` watcher
+that calls it that way. A maintainer's own tag still has to bump `orax.toml`
+`version` to match by hand; nothing catches a mismatch until that check fails
+the run.
 
 ## Working on this repository
 
-- `deno task check` / `lint` / `format` / `simulate` / `build` / `package`.
+- `deno task check` / `lint` / `format` / `simulate` / `build` / `sync` /
+  `package`.
 - There is no unit test suite here; `tests/host-simulator.ts` drives the plugin
   the way Ora's host does and needs a real CLI, staged or on PATH. CI runs only
   `check` and `lint`, deliberately: type checking resolves the whole module
@@ -300,12 +331,15 @@ manifest that disagrees with the tag.
   and lint stays meaningful even while that fails.
 - The SDK is imported from its published JSR package and pinned in `deno.json`;
   keep `deno.lock` synchronized when changing the SDK version.
-- `scripts/package.ts` knows nothing about OpenCode and is meant to be copied to
-  another agent plugin unchanged, with only `bundle.config.ts` rewritten.
-  `.github/workflows/marketplace.yml` is fully generic too and was copied
-  verbatim from the sibling `codex-agent`. `.github/workflows/release.yml`
-  carries the `publish` job that calls it, but is otherwise plugin-agnostic.
-  Keep them generic.
+- `scripts/package.ts` and `scripts/upstream.ts` know nothing about OpenCode
+  beyond what `bundle.config.ts` states, and are meant to be copied to another
+  agent plugin that bundles a GitHub-released CLI unchanged, with only
+  `bundle.config.ts` rewritten. `.github/workflows/marketplace.yml` is fully
+  generic too and was copied verbatim from the sibling `codex-agent`.
+  `.github/workflows/release.yml` and `.github/workflows/upstream.yml` read
+  `orax.toml` and `upstream.lock.json` rather than naming OpenCode directly, but
+  the cron comment and a few log messages in `upstream.yml` do name it. Keep the
+  generic parts generic.
 - Bump `orax.toml` `version` before handing someone a `.orax` to import.
   `install_local` refuses a version that is already installed and never retires
   older ones, so reusing a number silently leaves the old code running.

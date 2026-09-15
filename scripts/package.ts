@@ -2,10 +2,11 @@
  * Builds one `.orax` per target for an agent plugin that bundles an upstream CLI.
  *
  * Nothing here names a particular plugin or CLI, and nothing here reaches into a plugin's `src/`:
- * what to download, which asset serves each target, and where the binary lands inside the package
- * all come from `bundle.config.ts`. That is what lets this script and the release workflow be
- * copied to another agent plugin unchanged — including to one that bundles no CLI at all and
- * therefore has no in-package binary path to name.
+ * which asset serves each target and where the binary lands inside the package come from
+ * `bundle.config.ts`; the exact upstream release to bundle — resolved and verified ahead of time
+ * by `deno task sync` — comes from `upstream.lock.json`. That is what lets this script and the
+ * release workflow be copied to another agent plugin unchanged — including to one that bundles no
+ * CLI at all and therefore has no in-package binary path to name, and no lock to read.
  *
  * Usage:
  *   deno task package --tag v1.2.3 --repo owner/name
@@ -19,6 +20,7 @@ import { basename, dirname, join, relative } from "@std/path";
 import { UntarStream } from "@std/tar";
 import { BlobReader, ZipReader, ZipWriter } from "@zip-js/zip-js";
 import bundle from "../bundle.config.ts";
+import { LOCK_PATH, readLock } from "./upstream.ts";
 
 /** Operating systems a package can be built for, as `Deno.build.os` spells them. */
 export type TargetOs = typeof Deno.build.os;
@@ -265,6 +267,7 @@ async function buildBundledPackage(
   plan: TargetPlan,
   upstream: string,
   upstreamTag: string,
+  expectedSha256: string,
   fileName: string,
 ): Promise<void> {
   await Deno.remove(STAGE_DIR, { recursive: true }).catch(() => {});
@@ -285,6 +288,15 @@ async function buildBundledPackage(
     DOWNLOAD_DIR,
     "--clobber",
   );
+  // Verified against the digest `deno task sync` recorded from GitHub's own Releases API, the
+  // same role npm's `dist.integrity` plays for the sibling `claude-code-agent` and `codex-agent`
+  // — this catches upstream replacing an asset under a tag this plugin already pinned.
+  const actualSha256 = await sha256Hex(archive);
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(
+      `${plan.asset} sha256 ${actualSha256} does not match ${LOCK_PATH}'s pinned ${expectedSha256}; run 'deno task sync'`,
+    );
+  }
   // Upstream ships the CLI as the sole entry at the archive root, under the same name this
   // package uses for it.
   await extractEntry(archive, basename(plan.binaryPath), staged);
@@ -331,30 +343,38 @@ async function buildRelease(
   }
 
   await Deno.mkdir(DOWNLOAD_DIR, { recursive: true });
-  // Resolved once so every package in this release bundles the same CLI build: one "latest"
-  // lookup per target could straddle an upstream release and ship a version skew that only some
-  // platforms would ever see.
-  const upstreamTag = await run(
-    "gh",
-    "release",
-    "view",
-    "--repo",
-    config.upstream,
-    "--json",
-    "tagName",
-    "--jq",
-    ".tagName",
-  );
-  console.log(`Bundling ${config.upstream} ${upstreamTag}`);
+  // Read, never resolved here: `deno task sync` is the only thing allowed to ask GitHub what
+  // "latest" means. Rebuilding an existing tag must reproduce exactly the release it already
+  // shipped, and a "latest" lookup at package time could straddle an upstream release and ship a
+  // version skew a rebuild would not repeat.
+  const lock = await readLock();
+  console.log(`Bundling ${lock.repo} ${lock.tag}`);
 
   for (const [triple, asset] of Object.entries(config.assets)) {
+    const pinned = lock.assets[triple];
+    if (pinned === undefined) {
+      throw new Error(
+        `${LOCK_PATH} pins no asset for ${triple}; run 'deno task sync'`,
+      );
+    }
+    if (pinned.name !== asset) {
+      throw new Error(
+        `${LOCK_PATH} pins ${pinned.name} for ${triple}, but bundle.config.ts now names ${asset}; run 'deno task sync'`,
+      );
+    }
     const plan: TargetPlan = {
       triple,
       asset,
       binaryPath: config.binaryPath(osOfTriple(triple)),
     };
     const fileName = `${identifier}-${tag}-${triple}.orax`;
-    await buildBundledPackage(plan, config.upstream, upstreamTag, fileName);
+    await buildBundledPackage(
+      plan,
+      lock.repo,
+      lock.tag,
+      pinned.sha256,
+      fileName,
+    );
 
     const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
     manifest +=
@@ -362,7 +382,7 @@ async function buildRelease(
     console.log(`packaged ${fileName}`);
   }
   await Deno.remove(DOWNLOAD_DIR, { recursive: true }).catch(() => {});
-  console.log(`\nUpstream CLI: ${upstreamTag}`);
+  console.log(`\nUpstream CLI: ${lock.tag}`);
   return manifest;
 }
 

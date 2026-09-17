@@ -4,6 +4,7 @@ import type {
   AgentStartContext,
   HostProcesses,
   JsonValue,
+  TraceProviderDeclaration,
 } from "@ora-space/plugin-sdk";
 import { AGENT_METHODS } from "@ora-space/plugin-sdk";
 import {
@@ -62,6 +63,15 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   readonly #effects = new SkillEffectCoordinator(this.#client, () => this.#cwd);
 
   override readonly effects = this.#effects.definition;
+
+  /** The managed OpenCode trace logger writes one NDJSON file per provider session. */
+  override readonly traceProviders: readonly TraceProviderDeclaration[] = [{
+    providerId: "opencode",
+    format: "ora/trace.opencode-ndjson.v1",
+    root: "home",
+    directory: ".local/share/opencode/trace",
+    fileNameTemplate: "{provider_session_id}.ndjson",
+  }];
 
   override onActivate(context: PluginContext): void {
     console.info(`${context.pluginId} activated`);

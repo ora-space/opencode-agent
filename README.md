@@ -56,7 +56,7 @@ starts enforcing the field. Fill it in once there is a real host version to
 name.
 
 Note that the plugin SDK's version and Ora's are separate lines. This plugin
-builds against SDK 0.9.0; that is not an Ora version. The `package.json` this
+builds against SDK 0.10.0; that is not an Ora version. The `package.json` this
 repository used to carry declared `engines.ora >= 0.8.0` — an SDK version in a
 host-version field, in a file no Ora release has ever read —
 `scripts/package.ts` has never staged it into a `.orax`. It has been removed

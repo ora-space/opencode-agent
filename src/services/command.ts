@@ -8,6 +8,9 @@ import {
   spawnAgentProcess,
 } from "@ora-space/plugin-sdk";
 import { bundledBinaryPath } from "./bundled-binary.ts";
+import { logger } from "./log.ts";
+
+const log = logger("command");
 
 /** The CLI this plugin fronts, as a user's own install spells it. */
 const BINARY_NAME = "opencode";
@@ -59,10 +62,29 @@ export function spawnOpenCode(
   if (override !== undefined && override !== "") {
     return spawnOverride(processes, override, invocation);
   }
+  const packageCommand = bundledBinaryPath();
+  const commands = pathCommands();
+  log.info("spawning the OpenCode CLI", {
+    context: { cwd: invocation.cwd, packageCommand, commands },
+  });
   return spawnAgentProcess(processes, {
-    packageCommand: bundledBinaryPath(),
-    command: pathCommands(),
-  }, invocation);
+    packageCommand,
+    command: commands,
+  }, invocation).then(
+    (child) => {
+      log.info("OpenCode CLI spawned", {
+        context: { cwd: invocation.cwd, pid: child.pid },
+      });
+      return child;
+    },
+    (error) => {
+      log.warn("failed to spawn the OpenCode CLI", {
+        context: { cwd: invocation.cwd, packageCommand, commands },
+        error,
+      });
+      throw error;
+    },
+  );
 }
 
 /**
@@ -76,17 +98,31 @@ async function spawnOverride(
   command: string,
   invocation: AgentInvocation,
 ): Promise<HostChildProcess> {
+  log.info("spawning the OpenCode CLI via override", {
+    context: { cwd: invocation.cwd, command },
+  });
   try {
-    return await processes.spawn({ command, ...invocation });
+    const child = await processes.spawn({ command, ...invocation });
+    log.info("OpenCode CLI spawned via override", {
+      context: { cwd: invocation.cwd, pid: child.pid },
+    });
+    return child;
   } catch (error) {
     if (
       error instanceof HostRequestError && error.kind === "program_not_found"
     ) {
+      log.warn(`${BIN_OVERRIDE_ENV} points at a binary that does not exist`, {
+        context: { cwd: invocation.cwd, command },
+      });
       throw new PluginMethodError(
         AGENT_NOT_INSTALLED,
         `${BIN_OVERRIDE_ENV} points at ${command}, which does not exist`,
       );
     }
+    log.warn("failed to spawn the OpenCode CLI via override", {
+      context: { cwd: invocation.cwd, command },
+      error,
+    });
     throw error;
   }
 }

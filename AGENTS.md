@@ -226,10 +226,10 @@ nothing.
 
 ## Protocol hygiene
 
-- **stdout is the binary protocol channel.** `protectProtocolStdout()` redirects
-  every `console` method to stderr before any plugin code runs. A single
-  `console.log` reaching stdout is read by the host as a corrupt frame and takes
-  the plugin down.
+- **stdout is the binary protocol channel.** `protectProtocolStdout()` routes
+  every `console` method through the plugin logger before any plugin code runs.
+  A single `console.log` reaching stdout is read by the host as a corrupt frame
+  and takes the plugin down.
 - **ACP payloads are never parsed** on the bridge. Frames are re-framed between
   Ora's binary envelope and the CLI's NDJSON and otherwise passed through
   verbatim. `handlers/effects.ts` is the one exception, and a deliberately
@@ -269,6 +269,28 @@ shipped.
 Bump `orax.toml` `version` before tagging: `install_local` refuses a version
 that is already installed and never retires older ones, so reusing a number
 silently leaves the old code running.
+
+## Logging
+
+Everything this plugin says goes through the SDK's `plugin.logger`, which writes
+`@ora/plugin-log/v1` envelopes to stderr; the host persists them into this
+plugin's own log file, filtered by the per-plugin level the user picks in Ora's
+developer settings. `src/services/log.ts` is the one seam: `logger(target)`
+returns a logger for a component, and `installLogger` adopts the SDK-owned
+instance the moment `runAgentPlugin` has built it. A logger created at import
+time resolves its SDK parent on each call, so records written during
+construction still reach stderr in the same format rather than stdout, and
+everything after the install goes through the SDK's own instance.
+
+Targets are how a `plugin.log` is read: `plugin` (activation, start/stop,
+deactivation), `host-call` (every `agent/*` method with duration and outcome),
+`lifecycle`, `acp` (frame envelopes only — `method` and `id`, never `params`),
+`opencode-client` (spawn, pid, exit, pipe failures), `opencode-cli` (the live
+CLI's own stderr, one record per line at `info`), `effects` (barrier, drain,
+restart, readiness), `models` and `acp-probe` (discovery; the probe CLI's stderr
+is `opencode-cli.probe` at `debug`), and `command` (which binary was spawned and
+whether it started). ACP payloads are never logged: a `session/prompt` carries
+the user's text, and the log has no business keeping it.
 
 ## Manifest
 

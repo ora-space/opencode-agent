@@ -21,6 +21,7 @@ import {
   listOpenCodeModels,
 } from "./handlers/models.ts";
 import { OpenCodeClient } from "./services/opencode-client.ts";
+import { logger } from "./services/log.ts";
 
 /** Must match `identifier` in orax.toml, which is also this agent's identity inside Ora. */
 const PLUGIN_ID = "ora-space.opencode";
@@ -40,21 +41,36 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   /** Set by `onActivate`, which the base class runs before the host can call anything. */
   #processes: HostProcesses | undefined;
 
+  readonly #log = logger("plugin");
+
   readonly #client = new OpenCodeClient({
     onAcpFrame: (frame) => {
       this.#effects.observe(frame);
+      if (this.#send === undefined) {
+        this.#log.warn(
+          "dropping ACP frame from the CLI: no host sender yet",
+          {
+            context: acpFrameSummary(frame),
+          },
+        );
+        return;
+      }
       // A send failure means the host connection is already gone; there is nothing this plugin
       // can do with the frame, and throwing here would only kill the stdout pump.
-      void this.#send?.(frame).catch((error) => {
-        console.warn(`failed to forward ACP frame to the host: ${error}`);
+      void this.#send(frame).catch((error) => {
+        this.#log.warn("failed to forward ACP frame to the host", {
+          context: acpFrameSummary(frame),
+          error,
+        });
       });
     },
     onExited: () => {
       if (this.#cwd !== undefined) {
         invalidateOpenCodeModels(this.#cwd);
       }
-      console.warn(
+      this.#log.warn(
         "the OpenCode CLI exited on its own; Ora decides whether to reconnect",
+        { context: { cwd: this.#cwd } },
       );
     },
   });
@@ -64,7 +80,9 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   override readonly effects = this.#effects.definition;
 
   override onActivate(context: PluginContext): void {
-    console.info(`${context.pluginId} activated`);
+    this.#log.info(`${context.pluginId} activated`, {
+      context: { pluginId: context.pluginId },
+    });
     this.#processes = context.processes;
     this.#client.attachProcesses(context.processes);
   }
@@ -73,6 +91,9 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     context: AgentStartContext,
     send: AcpSender,
   ): Promise<void> => {
+    this.#log.info("agent start requested", {
+      context: { cwd: context.cwd, previousCwd: this.#cwd },
+    });
     if (this.#cwd !== undefined) {
       invalidateOpenCodeModels(this.#cwd);
     }
@@ -83,6 +104,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   };
 
   override onStop = async (): Promise<void> => {
+    this.#log.info("agent stop requested", { context: { cwd: this.#cwd } });
     if (this.#cwd !== undefined) {
       invalidateOpenCodeModels(this.#cwd);
     }
@@ -106,9 +128,28 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     forwardAcpFrame(this.#client, this.#effects, frame);
 
   override async onDeactivate(): Promise<void> {
+    this.#log.info("plugin deactivating; stopping the CLI", {
+      context: { cwd: this.#cwd, cliRunning: this.#client.running },
+    });
     invalidateAllOpenCodeModels();
     await this.#client.stop();
   }
+}
+
+/** The envelope fields of one ACP frame that are safe to log: never its params or result. */
+function acpFrameSummary(frame: JsonValue): Record<string, unknown> {
+  if (typeof frame !== "object" || frame === null || Array.isArray(frame)) {
+    return { shape: typeof frame };
+  }
+  return {
+    method: typeof frame.method === "string" ? frame.method : undefined,
+    id: typeof frame.id === "string" || typeof frame.id === "number"
+      ? frame.id
+      : undefined,
+    kind: "method" in frame
+      ? ("id" in frame ? "request" : "notification")
+      : ("error" in frame ? "error" : "response"),
+  };
 }
 
 await runAgentPlugin(new OpenCodeAgentPlugin(), { pluginId: PLUGIN_ID });

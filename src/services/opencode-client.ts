@@ -1,6 +1,11 @@
 import type { HostProcesses, JsonValue } from "@ora-space/plugin-sdk";
 import { spawnOpenCode } from "./command.ts";
+import { logger } from "./log.ts";
 import { decodeLines, encodeLine } from "./ndjson.ts";
+
+const log = logger("opencode-client");
+/** The CLI's own stderr, republished line by line under its own target. */
+const cliLog = logger("opencode-cli");
 
 /** The subset of a spawned child process this bridge depends on, so tests can substitute one. */
 export interface SpawnedProcess {
@@ -80,14 +85,25 @@ export class OpenCodeClient {
    * the same host connection.
    */
   async start(cwd: string): Promise<void> {
+    const restarting = this.#running !== undefined;
     await this.stop();
     this.#expectedExit = false;
 
+    log.info(restarting ? "restarting the CLI" : "starting the CLI", {
+      context: { cwd },
+    });
     // Failures are already classified for Ora by `spawnOpenCode`: a CLI this machine does not have
     // stays retryable, while a package that cannot run the one it ships does not.
-    const process = await this.#spawn(["acp", "--cwd", cwd], cwd);
+    let process: SpawnedProcess;
+    try {
+      process = await this.#spawn(["acp", "--cwd", cwd], cwd);
+    } catch (error) {
+      log.warn("the CLI could not be spawned", { context: { cwd }, error });
+      throw error;
+    }
     this.#running = { process, stdinWriter: process.stdin.getWriter() };
     this.#attach(process);
+    log.info("CLI running", { context: { cwd, pid: process.pid } });
   }
 
   /**
@@ -101,7 +117,15 @@ export class OpenCodeClient {
     if (running === undefined) {
       throw new Error("the OpenCode agent is not running");
     }
-    await running.stdinWriter.write(encodeLine(JSON.stringify(frame)));
+    try {
+      await running.stdinWriter.write(encodeLine(JSON.stringify(frame)));
+    } catch (error) {
+      log.warn("writing an ACP frame to the CLI failed", {
+        context: { pid: running.process.pid },
+        error,
+      });
+      throw error;
+    }
   }
 
   /** Kills the CLI and releases every pipe; idempotent when already stopped. */
@@ -110,8 +134,10 @@ export class OpenCodeClient {
     this.#running = undefined;
     this.#expectedExit = true;
     if (running === undefined) {
+      log.debug("stop requested with no CLI running");
       return;
     }
+    log.info("stopping the CLI", { context: { pid: running.process.pid } });
     try {
       await running.stdinWriter.close();
     } catch {
@@ -134,11 +160,20 @@ export class OpenCodeClient {
       // must never clear the new process's tracking or fire `onExited` regardless of the shared
       // `#expectedExit` flag, which by then reflects the newer generation's intent, not this one's.
       if (this.#running?.process !== process) {
+        log.debug("a superseded CLI generation exited", {
+          context: { pid: process.pid },
+        });
         return;
       }
       this.#running = undefined;
-      if (!this.#expectedExit) {
-        console.warn("opencode acp exited unexpectedly");
+      if (this.#expectedExit) {
+        log.info("CLI exited after stop", {
+          context: { pid: process.pid },
+        });
+      } else {
+        log.warn("opencode acp exited unexpectedly", {
+          context: { pid: process.pid },
+        });
         this.#onExited();
       }
     });
@@ -158,32 +193,56 @@ export class OpenCodeClient {
         try {
           frame = JSON.parse(line) as JsonValue;
         } catch {
-          console.warn(`dropping non-JSON stdout line: ${line}`);
+          // The line itself is logged: it is the CLI's own output on its protocol channel, and
+          // the only clue to what went wrong with the pairing.
+          log.warn("dropping a non-JSON stdout line from the CLI", {
+            context: { pid: process.pid, line: line.slice(0, 512) },
+          });
           continue;
         }
         if (
           frame === null || typeof frame !== "object" || Array.isArray(frame)
         ) {
-          console.warn("dropping non-object ACP frame from opencode");
+          log.warn("dropping a non-object ACP frame from the CLI", {
+            context: { pid: process.pid },
+          });
           continue;
         }
+        log.debug("CLI ACP frame received", {
+          context: { pid: process.pid, ...summarize(frame) },
+        });
         this.#onAcpFrame(frame);
       }
+      log.debug("CLI stdout reached EOF", {
+        context: { pid: process.pid },
+      });
     } catch (error) {
-      console.warn(`opencode stdout read failed: ${error}`);
+      log.warn("opencode acp stdout read failed", {
+        context: { pid: process.pid },
+        error,
+      });
     }
   }
 
-  /** Republishes the CLI's diagnostics on this plugin's stderr, which Ora logs. */
+  /**
+   * Republishes the CLI's diagnostics into this plugin's log, one record per line.
+   *
+   * The CLI is a third party whose stderr severity this plugin cannot know, so every line is
+   * recorded at `info` under its own target rather than guessed at; the host's per-plugin level
+   * decides whether it is kept.
+   */
   async #pumpStderr(process: SpawnedProcess): Promise<void> {
     try {
       for await (const line of decodeLines(process.stderr)) {
         if (line.length > 0) {
-          console.error(`[opencode] ${line}`);
+          cliLog.info(line, { context: { pid: process.pid } });
         }
       }
     } catch (error) {
-      console.warn(`opencode stderr read failed: ${error}`);
+      log.warn("opencode acp stderr read failed", {
+        context: { pid: process.pid },
+        error,
+      });
     }
   }
 
@@ -215,4 +274,17 @@ export class OpenCodeClient {
       exited: child.exited.then(() => undefined),
     };
   }
+}
+
+/** The envelope fields of one frame that are safe to log: never its params or result. */
+function summarize(frame: JsonValue): Record<string, unknown> {
+  if (typeof frame !== "object" || frame === null || Array.isArray(frame)) {
+    return {};
+  }
+  return {
+    method: typeof frame.method === "string" ? frame.method : undefined,
+    id: typeof frame.id === "string" || typeof frame.id === "number"
+      ? frame.id
+      : undefined,
+  };
 }

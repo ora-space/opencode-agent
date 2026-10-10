@@ -13,6 +13,11 @@
       "size": 60669097,
       "sha256": "c8f888b451f5494a18f858fffb0e0b68f4e4baa9c241761c5f206884f0fa640d"
     },
+    "aarch64-unknown-linux-gnu": {
+      "name": "opencode-linux-arm64.tar.gz",
+      "size": 60487957,
+      "sha256": "f7f2ba59ee8aa94d388f9696575a32d20e71c2ee48def9f80fc693a60fec6c72"
+    },
     "x86_64-pc-windows-msvc": {
       "name": "opencode-windows-x64.zip",
       "size": 62161290,

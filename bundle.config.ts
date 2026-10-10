@@ -21,6 +21,7 @@ export default {
   assets: {
     "aarch64-apple-darwin": "opencode-darwin-arm64.zip",
     "x86_64-unknown-linux-gnu": "opencode-linux-x64.tar.gz",
+    "aarch64-unknown-linux-gnu": "opencode-linux-arm64.tar.gz",
     "x86_64-pc-windows-msvc": "opencode-windows-x64.zip",
   },
   binaryPath: bundledBinaryPath,

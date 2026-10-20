@@ -230,11 +230,12 @@ nothing.
   every `console` method through the plugin logger before any plugin code runs.
   A single `console.log` reaching stdout is read by the host as a corrupt frame
   and takes the plugin down.
-- **ACP payloads are never parsed** on the bridge. Frames are re-framed between
-  Ora's binary envelope and the CLI's NDJSON and otherwise passed through
-  verbatim. `handlers/effects.ts` is the one exception, and a deliberately
-  narrow one: it reads `method` and `id` off the envelope to track turns, and
-  never looks at `params`.
+- **ACP routing** stays opaque for legacy starts and unrelated frames. When
+  `modelContext` is present, `services/model-adapter.ts` owns the
+  model/authentication guards and safe error envelopes; read
+  [Platform model bindings](README.md#platform-model-bindings) before changing
+  this seam. Effect tracking reads only envelope `method`/`id`. Keep payload
+  values out of logs; private provider diagnostics stay suppressed.
 - **Throw the right error code.** `AGENT_NOT_INSTALLED` (`-32001`) is retried
   quietly by Ora as expected local configuration; `AGENT_UNUSABLE` (`-32002`) is
   reported once and not retried; `-32000` is how an Effect Consumer says "not
@@ -346,11 +347,9 @@ the run.
 
 - `deno task check` / `lint` / `format` / `simulate` / `build` / `sync` /
   `package`.
-- There is no unit test suite here; `tests/host-simulator.ts` drives the plugin
-  the way Ora's host does and needs a real CLI, staged or on PATH. CI runs only
-  `check` and `lint`, deliberately: type checking resolves the whole module
-  graph, so it is also what catches an SDK version that is not published yet,
-  and lint stays meaningful even while that fails.
+- Unit tests use synthetic model bindings and declaration archives. The host
+  simulator needs a real CLI. Run check, lint and test as the development gate;
+  an unpublished SDK dependency remains a visible type-check failure in CI.
 - The SDK is imported from its published JSR package and pinned in `deno.json`;
   keep `deno.lock` synchronized when changing the SDK version.
 - `scripts/package.ts` and `scripts/upstream.ts` know nothing about OpenCode

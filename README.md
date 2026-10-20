@@ -149,6 +149,29 @@ Answers are reused for five minutes per workspace, so a picker that re-renders
 does not restart the CLI, while a model that appears after a provider login
 shows up the next time the picker is opened.
 
+## Platform model bindings
+
+With the SDK 0.11 startup contract, a host can supply a frozen `modelContext`.
+The adapter creates one OpenAI Chat Completions or Anthropic Messages provider
+with the exact model ID, including embedded slashes. Primary and auxiliary
+requests use that binding. Configuration content references an environment
+token; private execution HOME/state and disabled project configuration keep
+routing separate from ambient profiles. Discovery uses the active binding.
+
+Declared execution requires the bundled CLI and refuses authentication or model
+replacement. Private diagnostics are suppressed while protocol error codes are
+preserved. Node owns renewal, revocation and cleanup. The declaration
+contributes no additional Settings; the exact Settings JSON startup field
+remains available for future declared options. Legacy starts retain their
+existing path.
+
+Packaging adds a declaration only with `--agent-configuration`, for bundled
+artifacts after compatible hosts are deployed. Each target is read back and
+checked against the same immutable bytes. Upload the generated
+`dist/agent-configuration.json` with the release and its declaration
+association. Default packaging publishes no declaration. Unit tests use
+synthetic bindings and archives and require no installed CLI.
+
 ## Known limits
 
 - Each model discovery leaves one empty session behind in OpenCode's own session

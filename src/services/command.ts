@@ -1,5 +1,6 @@
 import {
   AGENT_NOT_INSTALLED,
+  AGENT_UNUSABLE,
   type AgentInvocation,
   type HostChildProcess,
   type HostProcesses,
@@ -85,6 +86,24 @@ export function spawnOpenCode(
       throw error;
     },
   );
+}
+
+/** Declared execution uses only its verified bundled CLI, without developer or PATH overrides. */
+export async function spawnOpenCodeModel(
+  processes: HostProcesses,
+  invocation: AgentInvocation,
+): Promise<HostChildProcess> {
+  try {
+    return await processes.spawn({
+      packageCommand: bundledBinaryPath(),
+      ...invocation,
+    });
+  } catch {
+    throw new PluginMethodError(
+      AGENT_UNUSABLE,
+      "The frozen package's bundled CLI cannot run",
+    );
+  }
 }
 
 /**

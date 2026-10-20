@@ -1,9 +1,10 @@
 {
   "name": "@ora-space/opencode-agent",
-  "version": "0.6.3",
+  "version": "0.6.12",
   "exports": "./src/main.ts",
   "minimumDependencyAge": 0,
   "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.0",
     "@ora-space/plugin-sdk": "jsr:@ora-space/plugin-sdk@0.10.0",
     "@std/cli": "jsr:@std/cli@^1.0.32",
     "@std/path": "jsr:@std/path@^1.1.6",
@@ -11,8 +12,9 @@
     "@zip-js/zip-js": "jsr:@zip-js/zip-js@^2.8.61"
   },
   "tasks": {
-    "check": "deno check src/main.ts scripts/package.ts scripts/sync-upstream.ts tests/host-simulator.ts",
+    "check": "deno check src/main.ts scripts/package.ts scripts/sync-upstream.ts tests/host-simulator.ts tests/model_adapter_test.ts tests/agent_configuration_test.ts",
     "lint": "deno lint src scripts tests bundle.config.ts",
+    "test": "deno test --allow-read --allow-write --allow-env tests/model_adapter_test.ts tests/agent_configuration_test.ts",
     "format": "deno fmt src scripts tests bundle.config.ts deno.json README.md AGENTS.md",
     "simulate": "deno run --allow-run --allow-read --allow-env --allow-net tests/host-simulator.ts",
     "dev": "deno run --no-prompt --allow-run --allow-read --allow-env --allow-net src/main.ts",

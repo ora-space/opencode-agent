@@ -2,8 +2,10 @@
   "version": "5",
   "specifiers": {
     "jsr:@ora-space/plugin-sdk@0.10.0": "0.10.0",
+    "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/cli@^1.0.32": "1.0.32",
     "jsr:@std/fmt@^1.0.10": "1.0.10",
+    "jsr:@std/internal@^1.0.12": "1.0.14",
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/streams@^1.0.17": "1.1.2",
@@ -14,11 +16,17 @@
     "@ora-space/plugin-sdk@0.10.0": {
       "integrity": "f678d20ea69f3da2a692faa174743818806c95b998ae23e5b11284c7a6d37c94"
     },
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal@^1.0.12"
+      ]
+    },
     "@std/cli@1.0.32": {
       "integrity": "188b3a100d6202d64e3f5bd3d799c7fa4f6d77f92cc65eb7f641c1fa0aa92a66",
       "dependencies": [
         "jsr:@std/fmt",
-        "jsr:@std/internal"
+        "jsr:@std/internal@^1.0.14"
       ]
     },
     "@std/fmt@1.0.10": {
@@ -30,7 +38,7 @@
     "@std/path@1.1.6": {
       "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
       "dependencies": [
-        "jsr:@std/internal"
+        "jsr:@std/internal@^1.0.14"
       ]
     },
     "@std/streams@1.1.2": {
@@ -49,6 +57,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@ora-space/plugin-sdk@0.10.0",
+      "jsr:@std/assert@1",
       "jsr:@std/cli@^1.0.32",
       "jsr:@std/path@^1.1.6",
       "jsr:@std/tar@~0.1.10",

@@ -1,5 +1,16 @@
-import type { HostProcesses, JsonValue } from "@ora-space/plugin-sdk";
-import { spawnOpenCode } from "./command.ts";
+import type {
+  AgentModel,
+  AgentModelContext,
+  HostProcesses,
+  JsonValue,
+} from "@ora-space/plugin-sdk";
+import { spawnOpenCode, spawnOpenCodeModel } from "./command.ts";
+import {
+  openCodeModelEnvironment,
+  openCodeModelId,
+  permitsOpenCodeFrame,
+  redactOpenCodeModelError,
+} from "./model-adapter.ts";
 import { logger } from "./log.ts";
 import { decodeLines, encodeLine } from "./ndjson.ts";
 
@@ -55,6 +66,23 @@ export class OpenCodeClient {
   #processes: HostProcesses | undefined;
   #running: RunningProcess | undefined;
   #expectedExit = false;
+  #modelContext: AgentModelContext | undefined;
+
+  /** Effect restarts retain this exact binding; a later start replaces the execution context. */
+  setModelContext(context: AgentModelContext | undefined): void {
+    this.#modelContext = context;
+  }
+
+  /** Discovery is scoped to the active binding, never the module's workspace-cwd cache. */
+  get frozenModel(): AgentModel | undefined {
+    return this.#modelContext
+      ? {
+        id: openCodeModelId(this.#modelContext),
+        displayName: this.#modelContext.configuration.model.name,
+        default: true,
+      }
+      : undefined;
+  }
 
   constructor(options: OpenCodeClientOptions = {}) {
     this.#spawn = options.spawn ??
@@ -102,7 +130,7 @@ export class OpenCodeClient {
       throw error;
     }
     this.#running = { process, stdinWriter: process.stdin.getWriter() };
-    this.#attach(process);
+    this.#attach(process, this.#modelContext !== undefined);
     log.info("CLI running", { context: { cwd, pid: process.pid } });
   }
 
@@ -113,6 +141,21 @@ export class OpenCodeClient {
    * unbounded queue inside this process.
    */
   async writeAcp(frame: JsonValue): Promise<void> {
+    if (
+      this.#modelContext && !permitsOpenCodeFrame(frame, this.#modelContext)
+    ) {
+      if (
+        frame !== null && typeof frame === "object" && !Array.isArray(frame) &&
+        (typeof frame.id === "number" || typeof frame.id === "string")
+      ) {
+        this.#onAcpFrame({
+          jsonrpc: "2.0",
+          id: frame.id,
+          error: { code: -32602, message: "The execution model is frozen" },
+        });
+      }
+      return;
+    }
     const running = this.#running;
     if (running === undefined) {
       throw new Error("the OpenCode agent is not running");
@@ -151,9 +194,9 @@ export class OpenCodeClient {
   }
 
   /** Wires stdout, stderr, and exit bookkeeping for one live child. */
-  #attach(process: SpawnedProcess): void {
-    void this.#pumpStdout(process);
-    void this.#pumpStderr(process);
+  #attach(process: SpawnedProcess, sensitive: boolean): void {
+    void this.#pumpStdout(process, sensitive);
+    void this.#pumpStderr(process, sensitive);
     void process.exited.then(() => {
       // A process that is no longer `#running` was already superseded by a later `start()` (an
       // Effect restart, for instance); its death is old news, not a live agent going away, so it
@@ -186,7 +229,10 @@ export class OpenCodeClient {
    * Ora rejects non-object frames anyway, and one stray diagnostic line must not end every live
    * session on this agent.
    */
-  async #pumpStdout(process: SpawnedProcess): Promise<void> {
+  async #pumpStdout(
+    process: SpawnedProcess,
+    sensitive: boolean,
+  ): Promise<void> {
     try {
       for await (const line of decodeLines(process.stdout)) {
         let frame: JsonValue;
@@ -196,7 +242,10 @@ export class OpenCodeClient {
           // The line itself is logged: it is the CLI's own output on its protocol channel, and
           // the only clue to what went wrong with the pairing.
           log.warn("dropping a non-JSON stdout line from the CLI", {
-            context: { pid: process.pid, line: line.slice(0, 512) },
+            context: {
+              pid: process.pid,
+              line: sensitive ? undefined : line.slice(0, 512),
+            },
           });
           continue;
         }
@@ -211,6 +260,7 @@ export class OpenCodeClient {
         log.debug("CLI ACP frame received", {
           context: { pid: process.pid, ...summarize(frame) },
         });
+        if (sensitive) frame = redactOpenCodeModelError(frame);
         this.#onAcpFrame(frame);
       }
       log.debug("CLI stdout reached EOF", {
@@ -231,11 +281,14 @@ export class OpenCodeClient {
    * recorded at `info` under its own target rather than guessed at; the host's per-plugin level
    * decides whether it is kept.
    */
-  async #pumpStderr(process: SpawnedProcess): Promise<void> {
+  async #pumpStderr(
+    process: SpawnedProcess,
+    sensitive: boolean,
+  ): Promise<void> {
     try {
       for await (const line of decodeLines(process.stderr)) {
         if (line.length > 0) {
-          cliLog.info(line, { context: { pid: process.pid } });
+          if (!sensitive) cliLog.info(line, { context: { pid: process.pid } });
         }
       }
     } catch (error) {
@@ -259,7 +312,13 @@ export class OpenCodeClient {
         "OpenCodeClient cannot spawn before attachProcesses() runs",
       );
     }
-    const child = await spawnOpenCode(this.#processes, { args, cwd });
+    const child = this.#modelContext
+      ? await spawnOpenCodeModel(this.#processes, {
+        args,
+        cwd,
+        env: openCodeModelEnvironment(this.#modelContext),
+      })
+      : await spawnOpenCode(this.#processes, { args, cwd });
     return {
       stdin: new WritableStream<Uint8Array>({
         write: (chunk) => child.write(chunk),

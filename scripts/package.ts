@@ -21,6 +21,14 @@ import { UntarStream } from "@std/tar";
 import { BlobReader, ZipReader, ZipWriter } from "@zip-js/zip-js";
 import bundle from "../bundle.config.ts";
 import { LOCK_PATH, readLock } from "./upstream.ts";
+import {
+  AGENT_DECLARATION_COPY,
+  AGENT_DECLARATION_ENTRY,
+  agentDeclarationManifest,
+  type AgentDeclarationPublication,
+  readAgentDeclaration,
+  verifyPackagedAgentDeclaration,
+} from "./agent-configuration.ts";
 
 /** Operating systems a package can be built for, as `Deno.build.os` spells them. */
 export type TargetOs = typeof Deno.build.os;
@@ -246,9 +254,21 @@ async function findLogoFiles(): Promise<string[]> {
  * A universal package declares none: it carries no binary whose host compatibility could be wrong,
  * and an `[artifact]` section on it would make Ora check the one thing it cannot promise.
  */
-async function stagePluginFiles(target: string | undefined): Promise<void> {
+async function stagePluginFiles(
+  target: string | undefined,
+  publication?: AgentDeclarationPublication,
+): Promise<void> {
   await Deno.mkdir(STAGE_DIR, { recursive: true });
   await Deno.copyFile(join(DIST, "main.js"), join(STAGE_DIR, "main.js"));
+  if (publication) {
+    await Deno.mkdir(dirname(join(STAGE_DIR, AGENT_DECLARATION_ENTRY)), {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      join(STAGE_DIR, AGENT_DECLARATION_ENTRY),
+      publication.bytes,
+    );
+  }
   for (const extra of [...await findLogoFiles(), "README.md"]) {
     await Deno.copyFile(extra, join(STAGE_DIR, extra)).catch(() => {});
   }
@@ -269,6 +289,7 @@ async function buildBundledPackage(
   upstreamTag: string,
   expectedSha256: string,
   fileName: string,
+  publication?: AgentDeclarationPublication,
 ): Promise<void> {
   await Deno.remove(STAGE_DIR, { recursive: true }).catch(() => {});
   const staged = join(STAGE_DIR, plan.binaryPath);
@@ -301,8 +322,14 @@ async function buildBundledPackage(
   // package uses for it.
   await extractEntry(archive, basename(plan.binaryPath), staged);
 
-  await stagePluginFiles(plan.triple);
+  await stagePluginFiles(plan.triple, publication);
   await writeOrax(STAGE_DIR, join(PACKAGES_DIR, fileName), plan.binaryPath);
+  if (publication) {
+    await verifyPackagedAgentDeclaration(
+      join(PACKAGES_DIR, fileName),
+      publication,
+    );
+  }
   await Deno.remove(STAGE_DIR, { recursive: true });
   await Deno.remove(archive).catch(() => {});
 }
@@ -330,11 +357,15 @@ async function buildRelease(
   identifier: string,
   tag: string,
   repo: string,
+  publication?: AgentDeclarationPublication,
 ): Promise<string> {
   const base = `https://github.com/${repo}/releases/download/${tag}`;
   let manifest = (await Deno.readTextFile("orax.toml")).trimEnd();
 
   if (config.cli === "user_installed") {
+    if (publication) {
+      throw new Error("declared model adapters require bundled artifacts");
+    }
     const fileName = `${identifier}-${tag}.orax`;
     await buildUniversalPackage(fileName);
     const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
@@ -374,6 +405,7 @@ async function buildRelease(
       lock.tag,
       pinned.sha256,
       fileName,
+      publication,
     );
 
     const digest = await sha256Hex(join(PACKAGES_DIR, fileName));
@@ -383,11 +415,15 @@ async function buildRelease(
   }
   await Deno.remove(DOWNLOAD_DIR, { recursive: true }).catch(() => {});
   console.log(`\nUpstream CLI: ${lock.tag}`);
-  return manifest;
+  return manifest + agentDeclarationManifest(publication);
 }
 
 async function main(): Promise<void> {
-  const flags = parseArgs(Deno.args, { string: ["tag", "repo"] });
+  const flags = parseArgs(Deno.args, {
+    string: ["tag", "repo"],
+    boolean: ["agent-configuration"],
+    default: { "agent-configuration": false },
+  });
   const tag = flags.tag ?? Deno.env.get("GITHUB_REF_NAME");
   const repo = flags.repo ?? Deno.env.get("GITHUB_REPOSITORY");
   if (tag === undefined || repo === undefined) {
@@ -397,7 +433,17 @@ async function main(): Promise<void> {
   const identifier = await manifestField("identifier");
   await Deno.mkdir(PACKAGES_DIR, { recursive: true });
 
-  const manifest = await buildRelease(identifier, tag, repo);
+  const publication = flags["agent-configuration"]
+    ? await readAgentDeclaration(AGENT_DECLARATION_ENTRY)
+    : undefined;
+  const manifest = await buildRelease(identifier, tag, repo, publication);
+  const copy = join(DIST, AGENT_DECLARATION_COPY);
+  if (publication) await Deno.writeFile(copy, publication.bytes);
+  else {try {
+      await Deno.remove(copy);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }}
 
   // The marketplace index needs the release form of the manifest, which carries the download URLs
   // and digests. It is only knowable once the packages exist, so it is generated here rather than

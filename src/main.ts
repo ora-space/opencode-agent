@@ -1,6 +1,7 @@
 import type {
   AcpSender,
   AgentModel,
+  AgentModelApplied,
   AgentStartContext,
   HostProcesses,
   JsonValue,
@@ -90,7 +91,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   override onStart = async (
     context: AgentStartContext,
     send: AcpSender,
-  ): Promise<void> => {
+  ): Promise<AgentModelApplied | void> => {
     this.#log.info("agent start requested", {
       context: { cwd: context.cwd, previousCwd: this.#cwd },
     });
@@ -100,7 +101,11 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     this.#send = send;
     this.#cwd = context.cwd;
     invalidateOpenCodeModels(context.cwd);
-    await startOpenCode(this.#client, context);
+    return await startOpenCode(
+      this.#client,
+      context,
+      readEnv("XDG_CONFIG_HOME"),
+    );
   };
 
   override onStop = async (): Promise<void> => {
@@ -114,6 +119,14 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   override onListModels = (
     context: AgentListModelsContext,
   ): Promise<AgentModel[]> => {
+    // A platform route offers exactly its frozen model. Probing would start a CLI on the host's
+    // own configuration and credentials — a run nobody admitted — and list what that finds.
+    const frozen = this.#client.frozenModel;
+    if (frozen !== undefined) {
+      return Promise.resolve([
+        { id: frozen.id, displayName: frozen.name, default: true },
+      ]);
+    }
     if (this.#processes === undefined) {
       throw new Error(
         `${AGENT_METHODS.listModels} was called before activation`,
@@ -150,6 +163,15 @@ function acpFrameSummary(frame: JsonValue): Record<string, unknown> {
       ? ("id" in frame ? "request" : "notification")
       : ("error" in frame ? "error" : "response"),
   };
+}
+
+/** Reads an env var, treating a missing read permission as an unset value. */
+function readEnv(name: string): string | undefined {
+  try {
+    return Deno.env.get(name);
+  } catch {
+    return undefined;
+  }
 }
 
 await runAgentPlugin(new OpenCodeAgentPlugin(), { pluginId: PLUGIN_ID });

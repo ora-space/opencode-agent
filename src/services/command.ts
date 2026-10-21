@@ -1,5 +1,6 @@
 import {
   AGENT_NOT_INSTALLED,
+  AGENT_UNUSABLE,
   type AgentInvocation,
   type HostChildProcess,
   type HostProcesses,
@@ -38,7 +39,7 @@ function pathCommands(): string[] {
 }
 
 /** Full path to a locally built OpenCode, overriding both ways of resolving one. */
-const BIN_OVERRIDE_ENV = "ORA_OPENCODE_BIN";
+export const BIN_OVERRIDE_ENV = "ORA_OPENCODE_BIN";
 
 /**
  * Spawns the OpenCode CLI, whichever way this package was built to reach one.
@@ -85,6 +86,37 @@ export function spawnOpenCode(
       throw error;
     },
   );
+}
+
+/**
+ * Spawns only the CLI this package ships, for a platform-model execution.
+ *
+ * The platform route is configuration written for, and tested against, the pinned OpenCode build
+ * this package bundles; `ORA_OPENCODE_BIN` or an install on PATH could be any other version, with
+ * its own idea of which configuration sources outrank the one this plugin supplies. So neither is
+ * consulted, and a package that cannot run its own CLI fails the start as `AGENT_UNUSABLE` rather
+ * than looking further.
+ */
+export async function spawnBundledOpenCode(
+  processes: HostProcesses,
+  invocation: AgentInvocation,
+): Promise<HostChildProcess> {
+  const packageCommand = bundledBinaryPath();
+  log.info("spawning the bundled OpenCode CLI for a platform route", {
+    context: { cwd: invocation.cwd, packageCommand },
+  });
+  try {
+    return await processes.spawn({ packageCommand, ...invocation });
+  } catch (error) {
+    log.warn("the bundled OpenCode CLI could not be spawned", {
+      context: { cwd: invocation.cwd, packageCommand },
+      error,
+    });
+    throw new PluginMethodError(
+      AGENT_UNUSABLE,
+      "this package's bundled OpenCode CLI cannot run, and a platform model route uses no other",
+    );
+  }
 }
 
 /**

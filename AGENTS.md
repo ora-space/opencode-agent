@@ -310,12 +310,13 @@ verifies the downloaded archive against the pinned digest before extracting it,
 and emits one `.orax` plus one `[[targets]]` record per target.
 
 `deno task sync --check` exits 20 when the committed lock is behind the upstream
-repository's latest release. The nightly `upstream.yml` treats only that code as
-an update, commits the refreshed lock with a bumped `orax.toml` patch version,
-tags it, then calls the reusable `release.yml`. Packaging must never resolve
-"latest" itself; rebuilding an existing tag must use only its committed lock —
-that is what makes a rebuild of a tag reproduce exactly the release it already
-shipped.
+`bundle.config.ts` names. The nightly `upstream.yml` treats only that code as an
+update, commits the refreshed lock with a bumped `orax.toml` version
+(`scripts/bump-version.ts`: the patch number, or the trailing counter of a
+suffixed version such as `0.7.0-opencode2.1` → `0.7.0-opencode2.2`), tags it,
+then calls the reusable `release.yml`. Packaging must never resolve "latest"
+itself; rebuilding an existing tag must use only its committed lock — that is
+what makes a rebuild of a tag reproduce exactly the release it already shipped.
 
 Bump `orax.toml` `version` before tagging: `install_local` refuses a version
 that is already installed and never retires older ones, so reusing a number
@@ -420,9 +421,9 @@ the run.
   covers packaging and `tests/model_route_test.ts` drives the platform model
   route against a scripted spawn. `tests/host-simulator.ts` drives the plugin
   the way Ora's host does and needs a real CLI, staged or on PATH. CI runs
-  `check`, `lint`, `test` and the archive integrity tests, none of which needs a
-  CLI. Type checking resolves the whole module graph, so it is also what catches
-  an SDK version that is not published yet, and lint stays meaningful even while
+  `check`, `lint`, `test` and the `scripts/` tests, none of which needs a CLI.
+  Type checking resolves the whole module graph, so it is also what catches an
+  SDK version that is not published yet, and lint stays meaningful even while
   that fails.
 - The SDK is imported from its published JSR package and pinned in `deno.json`;
   keep `deno.lock` synchronized when changing the SDK version.

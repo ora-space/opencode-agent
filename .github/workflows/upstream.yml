@@ -1,7 +1,9 @@
 name: Upstream
 
-# Watches `anomalyco/opencode`'s GitHub releases and releases a new patch version of this plugin
-# whenever upstream publishes one.
+# Watches upstream for a new OpenCode CLI release and publishes a new version of this plugin
+# whenever one appears. Which upstream that is — a pinned npm distribution, or the latest GitHub
+# release — is `bundle.config.ts`'s choice; this workflow only acts on what `deno task sync`
+# resolved.
 #
 # The release itself is not duplicated here: this workflow calls `release.yml`, which is also what
 # a maintainer's own tag runs. That is not only to avoid repeating the steps — a tag pushed with
@@ -45,10 +47,11 @@ jobs:
         with:
           deno-version: v2.x
 
-      # `sync --check` resolves upstream's latest release and compares it against the whole lock,
-      # not just the tag: upstream could republish a release's assets without moving the tag, and
-      # that would be the hardest kind of difference to notice later. Exit 20 is "behind"; anything
-      # else non-zero is a real failure and must not be read as "nothing to do".
+      # `sync --check` resolves the upstream `bundle.config.ts` names (a pinned npm distribution,
+      # or the latest GitHub release) and compares it against the whole lock, not just the version:
+      # upstream could republish a release's assets without moving it, and that would be the
+      # hardest kind of difference to notice later. Exit 20 is "behind"; anything else non-zero is
+      # a real failure and must not be read as "nothing to do".
       - name: Check for a new OpenCode release
         id: check
         env:
@@ -63,7 +66,7 @@ jobs:
             *) echo "::error::sync --check failed with $code"; exit "$code" ;;
           esac
 
-      - name: Pin the new upstream and bump the patch version
+      - name: Pin the new upstream and bump the plugin version
         id: bump
         if: steps.check.outputs.behind == 'true'
         env:
@@ -72,16 +75,13 @@ jobs:
           set -euo pipefail
           deno task sync
 
-          # This plugin's version is its own: the patch position counts releases of this package,
-          # and an upstream bump is one of the things that causes one. It deliberately does not
-          # mirror OpenCode's own tag, which moves for reasons that have nothing to do with this
-          # plugin.
-          CURRENT=$(grep -m1 '^version *=' orax.toml | sed -E 's/^version *= *"(.*)"/\1/')
-          MAJOR=${CURRENT%%.*}
-          REST=${CURRENT#*.}
-          MINOR=${REST%%.*}
-          PATCH=${REST#*.}
-          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          # This plugin's version is its own: it counts releases of this package, and an upstream
+          # bump is one of the things that causes one. It deliberately does not mirror OpenCode's
+          # own tag, which moves for reasons that have nothing to do with this plugin. A suffixed
+          # line bumps the trailing counter of its suffix instead (`0.7.0-opencode2.1` ->
+          # `0.7.0-opencode2.2`); `scripts/bump-version.ts` owns that rule and is tested, so this
+          # step never does arithmetic on a version string itself.
+          NEXT=$(deno task bump-version)
           TAG="v${NEXT}"
 
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
@@ -89,11 +89,9 @@ jobs:
             exit 1
           fi
 
-          sed -i -E "s/^version = \"${CURRENT}\"/version = \"${NEXT}\"/" orax.toml
-
           UPSTREAM_TAG=$(jq -r '.tag' upstream.lock.json)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "bumping ${CURRENT} -> ${NEXT} for opencode ${UPSTREAM_TAG}"
+          echo "tagging ${TAG} for upstream ${UPSTREAM_TAG}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

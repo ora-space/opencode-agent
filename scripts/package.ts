@@ -337,17 +337,18 @@ async function buildBundledPackage(
       "--clobber",
     );
   }
-  // Verified against the digest `deno task sync` recorded from GitHub's own Releases API, the
-  // same role npm's `dist.integrity` plays for the sibling `claude-code-agent` and `codex-agent`
-  // — this catches upstream replacing an asset under a tag this plugin already pinned.
+  // A GitHub-release download is checked against the digest `deno task sync` recorded from the
+  // Releases API, which catches upstream replacing an asset under a tag this plugin already
+  // pinned. An npm archive was already checked against its `dist.integrity` SRI above, before it
+  // was written, so only the release branch has a digest left to verify here.
   const actualSha256 = npmAsset ? undefined : await sha256Hex(archive);
   if (!npmAsset && actualSha256 !== expectedSha256) {
     throw new Error(
       `${plan.asset} sha256 ${actualSha256} does not match ${LOCK_PATH}'s pinned ${expectedSha256}; run 'deno task sync'`,
     );
   }
-  // Upstream ships the CLI as the sole entry at the archive root, under the same name this
-  // package uses for it.
+  // The CLI sits at the archive root in a GitHub release and under `package/bin/` in an npm
+  // tarball; either way the staged file keeps the name this package asks the host to spawn.
   await extractEntry(
     archive,
     npmAsset

@@ -35,5 +35,7 @@ jobs:
       - name: Test
         run: deno task test
 
-      - name: Archive integrity tests
-        run: deno test scripts/upstream.test.ts
+      # The script tests are pure — version arithmetic and archive integrity — so they need no
+      # CLI, no credentials and no network.
+      - name: Script tests
+        run: deno test scripts/

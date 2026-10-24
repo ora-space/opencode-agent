@@ -162,6 +162,12 @@ a build-time flag; `bundle.config.ts` picks which one a release is. See
 silently running a different CLI than the one a developer named is worse than
 failing.
 
+A platform model route is the exception to all three: `spawnBundledOpenCode`
+asks the host for the bundled CLI alone — no `ORA_OPENCODE_BIN`, no PATH — and
+fails as `AGENT_UNUSABLE` when the package cannot run it. The route's
+configuration was written for the pinned build, and another version may rank
+configuration sources differently.
+
 `assets/bin/` is git-ignored. It is staged only so `deno task simulate` can run
 against a real binary; released packages have `scripts/package.ts` download the
 CLI per target at package time. With nothing staged there the simulator answers
@@ -185,6 +191,51 @@ it:
 
 Invocation env wins over provider env
 (`{ ...providerEnv(), ...invocation.env }`), so a caller can always override.
+
+## Platform model route
+
+On an Ora Node, `agent/start` can carry a frozen `modelContext`: one model over
+`openai-completions` or `anthropic-messages`, the platform proxy URL and a
+temporary token. `src/services/model-route.ts` turns it into the OpenCode
+provider configuration the Node used to write itself, now owned by the plugin
+that drives the CLI, and the SDK refuses the start unless `onStart` returns the
+exact `AgentModelApplied`.
+
+- The configuration travels as `OPENCODE_CONFIG_CONTENT` and names the token as
+  `{env:ORA_MODEL_ACCESS_TOKEN}`, so the text can be logged or persisted without
+  the token; only the CLI's own environment holds it.
+- `OPENCODE_CONFIG_DIR` points at the session's private `XDG_CONFIG_HOME` and
+  project configuration is disabled, so neither the repository's nor the host's
+  `opencode.json` can replace the provider. A start whose host provides no
+  private configuration root is refused rather than run on the host's own.
+- The spawn environment only adds to what the host inherits, so configuration
+  variables that could reach the provider are overridden rather than removed:
+  `OPENCODE_CONFIG` (one more file to merge), `OPENCODE_MODELS_URL` and
+  `OPENCODE_MODELS_PATH` are set empty, which OpenCode 2.0.32 reads as unset,
+  and `OPENCODE_CONFIG_PROJECT_DISABLE` is set alongside
+  `OPENCODE_DISABLE_PROJECT_CONFIG` because it takes precedence over it.
+- Settings must be empty — this release declares none — and the proxy must be an
+  HTTPS URL without credentials, query or fragment.
+- `OpenCodeClient.useRoute` keeps the route for every later start, so an Effect
+  `reactivate` restart runs with the same configuration.
+- The same ACP connection could ask the CLI to leave that provider, so on a
+  route `services/model-guard.ts` answers these requests itself and the CLI
+  never sees them: `authenticate`, `logout`, `auth/*`, `_auth/*`, `providers/*`,
+  and `session/set_model` or the `model` config option for any model but the
+  frozen `ora-model/<id>` (an effort variant of it is allowed). OpenCode 2.0.32
+  serves only `authenticate`, as a no-op; the guard is what keeps a later pin
+  that serves the rest from becoming a way around the route.
+- Only the frozen model is ever offered. `agent/list_models` answers it without
+  a discovery probe, which would run on the host's own configuration, and every
+  `configOptions` model entry in a result or `config_option_update` is narrowed
+  to it — `enabled_providers` already limits the catalog, but managed settings
+  outrank this plugin's configuration.
+- Nothing the CLI prints is trusted to keep the route's secrets. Every stdout
+  and stderr line has the token and the gateway URL, origin, host and hostname
+  replaced with `[redacted]` before it is parsed, forwarded or logged, and every
+  CLI error response keeps its `code` but loses its `message` and `data`, which
+  can carry a provider response. Diagnostics stay in the log rather than being
+  dropped.
 
 ## Process ownership
 
@@ -366,12 +417,14 @@ the run.
 
 - `deno task check` / `lint` / `format` / `simulate` / `build` / `sync` /
   `package`.
-- `deno task test` runs `tests/package_test.ts`, the packaging checks that need
-  no CLI. `tests/host-simulator.ts` drives the plugin the way Ora's host does
-  and needs a real CLI, staged or on PATH. CI runs `check`, `lint` and the
-  `scripts/` tests, deliberately: type checking resolves the whole module graph,
-  so it is also what catches an SDK version that is not published yet, and lint
-  stays meaningful even while that fails.
+- `deno task test` runs the tests that need no CLI: `tests/package_test.ts`
+  covers packaging and `tests/model_route_test.ts` drives the platform model
+  route against a scripted spawn. `tests/host-simulator.ts` drives the plugin
+  the way Ora's host does and needs a real CLI, staged or on PATH. CI runs
+  `check`, `lint`, `test` and the `scripts/` tests, none of which needs a CLI.
+  Type checking resolves the whole module graph, so it is also what catches an
+  SDK version that is not published yet, and lint stays meaningful even while
+  that fails.
 - The SDK is imported from its published JSR package and pinned in `deno.json`;
   keep `deno.lock` synchronized when changing the SDK version.
 - `scripts/package.ts` and `scripts/upstream.ts` know nothing about OpenCode

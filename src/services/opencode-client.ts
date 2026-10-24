@@ -1,6 +1,8 @@
 import type { HostProcesses, JsonValue } from "@ora-space/plugin-sdk";
-import { spawnOpenCode } from "./command.ts";
+import { spawnBundledOpenCode, spawnOpenCode } from "./command.ts";
 import { logger } from "./log.ts";
+import { type FrozenModel, ModelGuard } from "./model-guard.ts";
+import type { ModelRoute } from "./model-route.ts";
 import { decodeLines, encodeLine } from "./ndjson.ts";
 
 const log = logger("opencode-client");
@@ -24,7 +26,11 @@ export interface OpenCodeClientOptions {
    * Which program a spawn resolves to is `command.ts`'s decision and is deliberately not a
    * parameter here: this class owns the CLI's lifetime, not the question of where it lives.
    */
-  spawn?: (args: string[], cwd: string) => SpawnedProcess;
+  spawn?: (
+    args: string[],
+    cwd: string,
+    env: Record<string, string>,
+  ) => SpawnedProcess;
   /** Receives every ACP frame emitted by the CLI, in output order. */
   onAcpFrame?: (frame: JsonValue) => void;
   /** Invoked after the CLI exits on its own, never after an explicit stop. */
@@ -41,13 +47,15 @@ interface RunningProcess {
  *
  * The plugin owns the CLI's whole lifetime: spawn on `agent/start`, kill on `agent/stop`. Ora
  * never sees the child's stdio, which is what lets OpenCode use ACP methods this host has never
- * heard of. Nothing here parses ACP; frames are re-framed between Ora's binary envelope and the
- * CLI's NDJSON and otherwise passed through verbatim.
+ * heard of. Without a platform route nothing here parses ACP; frames are re-framed between Ora's
+ * binary envelope and the CLI's NDJSON and otherwise passed through verbatim. With one,
+ * {@link ModelGuard} reads the frames that could change the provider or the model.
  */
 export class OpenCodeClient {
   readonly #spawn: (
     args: string[],
     cwd: string,
+    env: Record<string, string>,
   ) => SpawnedProcess | Promise<SpawnedProcess>;
   readonly #onAcpFrame: (frame: JsonValue) => void;
   readonly #onExited: () => void;
@@ -55,12 +63,21 @@ export class OpenCodeClient {
   #processes: HostProcesses | undefined;
   #running: RunningProcess | undefined;
   #expectedExit = false;
+  /** The platform route every generation of the CLI starts with; absent on a local host. */
+  #route: ModelRoute | undefined;
+  /** Holds every ACP frame of a platform-model execution to its route and model. */
+  #guard: ModelGuard | undefined;
 
   constructor(options: OpenCodeClientOptions = {}) {
     this.#spawn = options.spawn ??
-      ((args, cwd) => this.#spawnViaHost(args, cwd));
+      ((args, cwd, env) => this.#spawnViaHost(args, cwd, env));
     this.#onAcpFrame = options.onAcpFrame ?? (() => {});
     this.#onExited = options.onExited ?? (() => {});
+  }
+
+  /** The only model a platform route may use; `undefined` keeps the CLI's own discovery. */
+  get frozenModel(): FrozenModel | undefined {
+    return this.#guard?.model;
   }
 
   get running(): boolean {
@@ -76,6 +93,19 @@ export class OpenCodeClient {
    */
   attachProcesses(processes: HostProcesses): void {
     this.#processes = processes;
+  }
+
+  /**
+   * Fixes the platform route for every later start, including an Effect restart.
+   *
+   * One plugin process serves one execution, so the route is set once per `agent/start`;
+   * `undefined` returns to the CLI's own configuration.
+   */
+  useRoute(route: ModelRoute | undefined): void {
+    this.#route = route;
+    this.#guard = route === undefined
+      ? undefined
+      : new ModelGuard(route.model, route.secrets);
   }
 
   /**
@@ -97,14 +127,22 @@ export class OpenCodeClient {
     let process: SpawnedProcess;
     try {
       // V2 removed --cwd; the host-owned process cwd supplies the same directory.
-      process = await this.#spawn(["acp"], cwd);
+      process = await this.#spawn(["acp"], cwd, {
+        ...this.#route?.environment,
+      });
     } catch (error) {
       log.warn("the CLI could not be spawned", { context: { cwd }, error });
       throw error;
     }
     this.#running = { process, stdinWriter: process.stdin.getWriter() };
     this.#attach(process);
-    log.info("CLI running", { context: { cwd, pid: process.pid } });
+    log.info("CLI running", {
+      context: {
+        cwd,
+        pid: process.pid,
+        platformRoute: this.#route !== undefined,
+      },
+    });
   }
 
   /**
@@ -112,8 +150,33 @@ export class OpenCodeClient {
    *
    * Awaiting the write is what lets the CLI's backpressure reach the host instead of growing an
    * unbounded queue inside this process.
+   *
+   * On a platform route, every frame from Ora passes the {@link ModelGuard} first: a request that
+   * would replace the provider or the model is answered here with an error and never reaches the
+   * CLI.
    */
   async writeAcp(frame: JsonValue): Promise<void> {
+    const decision = this.#guard?.inbound(frame) ?? { forward: frame };
+    if ("reply" in decision) {
+      log.info(
+        "answered a host ACP request the platform route does not allow",
+        {
+          context: summarize(frame),
+        },
+      );
+      this.#onAcpFrame(decision.reply);
+      return;
+    }
+    if ("drop" in decision) {
+      log.info(
+        "dropped a host ACP notification the platform route does not allow",
+        {
+          context: summarize(frame),
+        },
+      );
+      return;
+    }
+    frame = decision.forward;
     const running = this.#running;
     if (running === undefined) {
       throw new Error("the OpenCode agent is not running");
@@ -189,7 +252,9 @@ export class OpenCodeClient {
    */
   async #pumpStdout(process: SpawnedProcess): Promise<void> {
     try {
-      for await (const line of decodeLines(process.stdout)) {
+      for await (const raw of decodeLines(process.stdout)) {
+        // Scrubbed before anything reads it, so neither Ora nor the log below sees a secret.
+        const line = this.#guard?.scrub(raw) ?? raw;
         let frame: JsonValue;
         try {
           frame = JSON.parse(line) as JsonValue;
@@ -212,7 +277,7 @@ export class OpenCodeClient {
         log.debug("CLI ACP frame received", {
           context: { pid: process.pid, ...summarize(frame) },
         });
-        this.#onAcpFrame(frame);
+        this.#onAcpFrame(this.#guard?.outbound(frame) ?? frame);
       }
       log.debug("CLI stdout reached EOF", {
         context: { pid: process.pid },
@@ -236,7 +301,10 @@ export class OpenCodeClient {
     try {
       for await (const line of decodeLines(process.stderr)) {
         if (line.length > 0) {
-          cliLog.info(line, { context: { pid: process.pid } });
+          // A failed provider request can be echoed with its URL or headers.
+          cliLog.info(this.#guard?.scrub(line) ?? line, {
+            context: { pid: process.pid },
+          });
         }
       }
     } catch (error) {
@@ -254,13 +322,17 @@ export class OpenCodeClient {
   async #spawnViaHost(
     args: string[],
     cwd: string,
+    env: Record<string, string>,
   ): Promise<SpawnedProcess> {
     if (this.#processes === undefined) {
       throw new Error(
         "OpenCodeClient cannot spawn before attachProcesses() runs",
       );
     }
-    const child = await spawnOpenCode(this.#processes, { args, cwd });
+    // A platform route runs only the CLI this package ships; see `spawnBundledOpenCode`.
+    const child = this.#route === undefined
+      ? await spawnOpenCode(this.#processes, { args, cwd, env })
+      : await spawnBundledOpenCode(this.#processes, { args, cwd, env });
     return {
       stdin: new WritableStream<Uint8Array>({
         write: (chunk) => child.write(chunk),

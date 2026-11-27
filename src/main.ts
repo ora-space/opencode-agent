@@ -1,26 +1,24 @@
 import type {
   AcpSender,
-  AgentModel,
+  AgentDiscovery,
+  AgentDiscoveryContext,
   AgentModelApplied,
   AgentStartContext,
   HostProcesses,
   JsonValue,
 } from "@ora-space/plugin-sdk";
-import { AGENT_METHODS } from "@ora-space/plugin-sdk";
 import {
-  type AgentListModelsContext,
   AgentPlugin,
   type PluginContext,
   runAgentPlugin,
 } from "./base/agent-plugin.ts";
 import { forwardAcpFrame } from "./handlers/acp.ts";
-import { SkillEffectCoordinator } from "./handlers/effects.ts";
-import { startOpenCode, stopOpenCode } from "./handlers/lifecycle.ts";
 import {
-  invalidateAllOpenCodeModels,
-  invalidateOpenCodeModels,
-  listOpenCodeModels,
-} from "./handlers/models.ts";
+  discoverForRoute,
+  invalidateAllOpenCodeDiscovery,
+  invalidateOpenCodeDiscovery,
+} from "./handlers/discovery.ts";
+import { startOpenCode, stopOpenCode } from "./handlers/lifecycle.ts";
 import { OpenCodeClient } from "./services/opencode-client.ts";
 import { logger } from "./services/log.ts";
 
@@ -37,7 +35,7 @@ const PLUGIN_ID = "ora-space.opencode";
 class OpenCodeAgentPlugin extends AgentPlugin {
   /** Valid only between `agent/start` and the end of the process; frames before that are lost. */
   #send: AcpSender | undefined;
-  /** The workspace root the CLI is running against; also what a Skill Effect restart respawns into. */
+  /** The workspace root the CLI is running against, whose discovery answers lifecycle events invalidate. */
   #cwd: string | undefined;
   /** Set by `onActivate`, which the base class runs before the host can call anything. */
   #processes: HostProcesses | undefined;
@@ -46,7 +44,6 @@ class OpenCodeAgentPlugin extends AgentPlugin {
 
   readonly #client = new OpenCodeClient({
     onAcpFrame: (frame) => {
-      this.#effects.observe(frame);
       if (this.#send === undefined) {
         this.#log.warn(
           "dropping ACP frame from the CLI: no host sender yet",
@@ -67,7 +64,7 @@ class OpenCodeAgentPlugin extends AgentPlugin {
     },
     onExited: () => {
       if (this.#cwd !== undefined) {
-        invalidateOpenCodeModels(this.#cwd);
+        invalidateOpenCodeDiscovery(this.#cwd);
       }
       this.#log.warn(
         "the OpenCode CLI exited on its own; Ora decides whether to reconnect",
@@ -75,10 +72,6 @@ class OpenCodeAgentPlugin extends AgentPlugin {
       );
     },
   });
-
-  readonly #effects = new SkillEffectCoordinator(this.#client, () => this.#cwd);
-
-  override readonly effects = this.#effects.definition;
 
   override onActivate(context: PluginContext): void {
     this.#log.info(`${context.pluginId} activated`, {
@@ -96,11 +89,11 @@ class OpenCodeAgentPlugin extends AgentPlugin {
       context: { cwd: context.cwd, previousCwd: this.#cwd },
     });
     if (this.#cwd !== undefined) {
-      invalidateOpenCodeModels(this.#cwd);
+      invalidateOpenCodeDiscovery(this.#cwd);
     }
     this.#send = send;
     this.#cwd = context.cwd;
-    invalidateOpenCodeModels(context.cwd);
+    invalidateOpenCodeDiscovery(context.cwd);
     return await startOpenCode(
       this.#client,
       context,
@@ -111,40 +104,29 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   override onStop = async (): Promise<void> => {
     this.#log.info("agent stop requested", { context: { cwd: this.#cwd } });
     if (this.#cwd !== undefined) {
-      invalidateOpenCodeModels(this.#cwd);
+      invalidateOpenCodeDiscovery(this.#cwd);
     }
     await stopOpenCode(this.#client);
   };
 
-  override onListModels = (
-    context: AgentListModelsContext,
-  ): Promise<AgentModel[]> => {
-    // A platform route offers exactly its frozen model. Probing would start a CLI on the host's
-    // own configuration and credentials — a run nobody admitted — and list what that finds.
-    const frozen = this.#client.frozenModel;
-    if (frozen !== undefined) {
-      return Promise.resolve([
-        { id: frozen.id, displayName: frozen.name, default: true },
-      ]);
-    }
-    if (this.#processes === undefined) {
-      throw new Error(
-        `${AGENT_METHODS.listModels} was called before activation`,
-      );
-    }
-    // Discovery is answered for the Workspace the host named, not for `#cwd`: `agent/start` gets a
-    // neutral directory, and a user can open pickers for a project this connection never ran in.
-    return listOpenCodeModels(this.#processes, context.cwd);
+  override onDiscover = (
+    context: AgentDiscoveryContext,
+  ): Promise<AgentDiscovery> => {
+    return discoverForRoute(
+      this.#client.frozenModel,
+      this.#processes,
+      context,
+    );
   };
 
   override onAcp = (frame: JsonValue): Promise<void> | void =>
-    forwardAcpFrame(this.#client, this.#effects, frame);
+    forwardAcpFrame(this.#client, frame);
 
   override async onDeactivate(): Promise<void> {
     this.#log.info("plugin deactivating; stopping the CLI", {
       context: { cwd: this.#cwd, cliRunning: this.#client.running },
     });
-    invalidateAllOpenCodeModels();
+    invalidateAllOpenCodeDiscovery();
     await this.#client.stop();
   }
 }

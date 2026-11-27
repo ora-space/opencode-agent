@@ -1,8 +1,8 @@
 import {
   type AcpSender,
   AGENT_METHODS,
-  type AgentEffectDefinition,
-  type AgentModel,
+  type AgentDiscovery,
+  type AgentDiscoveryContext,
   type AgentModelApplied,
   type AgentStartContext,
   createHostProcesses,
@@ -35,27 +35,17 @@ export interface RunAgentPluginOptions {
 }
 
 /**
- * Names the Workspace one model discovery call is answering for.
- *
- * Discovery happens outside any session, so this directory is the only thing telling a plugin
- * which project it is being asked about — a catalog that depends on the project's own
- * configuration cannot be resolved without it.
- */
-export interface AgentListModelsContext {
-  readonly cwd: string;
-}
-
-/**
  * Maps every class method onto the JSON-RPC method the Ora host invokes.
  *
  * The host contract fixes the wire names, so the mapping is explicit rather than derived from the
- * method name: a plugin that renamed `onListModels` would otherwise silently stop serving
- * `agent/list_models`.
+ * method name: a plugin that renamed `onDiscover` would otherwise silently stop serving
+ * `agent/discover`. The SDK serves `agent/list_models` from the same method for hosts that only
+ * know that name.
  */
 export const AGENT_METHOD_ROUTES = {
   onStart: AGENT_METHODS.start,
   onStop: AGENT_METHODS.stop,
-  onListModels: AGENT_METHODS.listModels,
+  onDiscover: AGENT_METHODS.discover,
 } as const;
 
 /** Maps the class method that consumes host notifications onto its wire name. */
@@ -99,25 +89,18 @@ export abstract class AgentPlugin {
   /** [agent/acp] Receives one ACP frame the host is forwarding to the agent. */
   abstract onAcp(frame: JsonValue): void | Promise<void>;
 
-  /** [agent/list_models] Lists the models selectable in one Workspace before any session exists. */
-  abstract onListModels(
-    context: AgentListModelsContext,
-  ): AgentModel[] | Promise<AgentModel[]>;
+  /**
+   * [agent/discover] Reports the models selectable in one Workspace before any session exists, and
+   * the agent's commands when the caller wants them.
+   */
+  abstract onDiscover(
+    context: AgentDiscoveryContext,
+  ): AgentDiscovery | Promise<AgentDiscovery>;
 
   // ------------------------- optional agent contract ---------------------------
 
   /** [agent/stop] Terminates the agent while leaving this plugin process alive. */
   onStop(): void | Promise<void> {}
-
-  /**
-   * Declares the Effect Resources this plugin consumes and coordinates their safe mutation.
-   *
-   * `undefined` opts the plugin out of the Effect contract entirely, which is the default for a
-   * plugin with nothing Ora manages on disk. A plugin that owns one sets this to a value serving
-   * `effect/coordinate`, `effect/reactivate`, and `effect/verify_ready`, typically by mounting a
-   * handler module the same way `onStart` and friends are mounted above.
-   */
-  effects: AgentEffectDefinition | undefined = undefined;
 }
 
 /** One entry of the flattened dispatch table, already bound to its plugin instance. */
@@ -155,19 +138,18 @@ export async function runAgentPlugin(
         () =>
           invoke(routes, AGENT_METHOD_ROUTES.onStop) as void | Promise<void>,
       ),
-    listModels: (context) =>
+    discover: (context) =>
       traced(
-        AGENT_METHOD_ROUTES.onListModels,
+        AGENT_METHOD_ROUTES.onDiscover,
         () =>
-          invoke(routes, AGENT_METHOD_ROUTES.onListModels, context) as
-            | AgentModel[]
-            | Promise<AgentModel[]>,
+          invoke(routes, AGENT_METHOD_ROUTES.onDiscover, context) as
+            | AgentDiscovery
+            | Promise<AgentDiscovery>,
       ),
     onAcp: (frame) =>
       invoke(routes, AGENT_NOTIFICATION_ROUTES.onAcp, frame) as
         | void
         | Promise<void>,
-    effects: plugin.effects,
   });
   // The SDK logger exists from here on; adopt it before anything else can log, and route the
   // console through it now rather than at `run()`, because activation happens first and stdout
@@ -181,9 +163,6 @@ export async function runAgentPlugin(
       deno: Deno.version.deno,
       os: Deno.build.os,
       arch: Deno.build.arch,
-      effects: plugin.effects?.resources.map((resource) =>
-        resource.workspaceRelativePath
-      ) ?? [],
     },
   });
 

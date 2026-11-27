@@ -96,7 +96,7 @@ export class OpenCodeClient {
   }
 
   /**
-   * Fixes the platform route for every later start, including an Effect restart.
+   * Fixes the platform route for every later start, including a restart.
    *
    * One plugin process serves one execution, so the route is set once per `agent/start`;
    * `undefined` returns to the CLI's own configuration.
@@ -219,8 +219,8 @@ export class OpenCodeClient {
     void this.#pumpStdout(process);
     void this.#pumpStderr(process);
     void process.exited.then(() => {
-      // A process that is no longer `#running` was already superseded by a later `start()` (an
-      // Effect restart, for instance); its death is old news, not a live agent going away, so it
+      // A process that is no longer `#running` was already superseded by a later `start()` (a
+      // restart, for instance); its death is old news, not a live agent going away, so it
       // must never clear the new process's tracking or fire `onExited` regardless of the shared
       // `#expectedExit` flag, which by then reflects the newer generation's intent, not this one's.
       if (this.#running?.process !== process) {

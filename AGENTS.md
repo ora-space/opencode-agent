@@ -15,83 +15,35 @@ declare. There is no warning, no log line, and no error surfaced to the user.
 Every API the plugin SDK offers an agent must be served, not just the ones a
 feature currently exercises:
 
-| SDK surface                                                                                                                             | Where it is mounted                                     | What is lost by omitting it                                                  |
-| --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `agent/start` · `agent/stop`                                                                                                            | `handlers/lifecycle.ts`                                 | the agent cannot run at all — these are `abstract`, so this fails to compile |
-| `agent/list_models`                                                                                                                     | `handlers/models.ts`                                    | no model picker; also `abstract`                                             |
-| `agent/acp` (both directions)                                                                                                           | `handlers/acp.ts` + `services/opencode-client.ts`       | no conversation; also `abstract`                                             |
-| **Effect Resources** — `effect/coordinate`, `effect/reactivate`, `effect/verify_ready`, and the `EffectResourceDeclaration` behind them | `handlers/effects.ts`, mounted as `AgentPlugin.effects` | **Skills never appear in the Workspace, with no error anywhere**             |
+| SDK surface                                                        | Where it is mounted                               | What is lost by omitting it                                                  |
+| ------------------------------------------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `agent/start` · `agent/stop`                                       | `handlers/lifecycle.ts`                           | the agent cannot run at all — these are `abstract`, so this fails to compile |
+| `agent/discover` (the SDK also serves `agent/list_models` from it) | `handlers/discovery.ts`                           | no model picker and no commands before a session; also `abstract`            |
+| `agent/acp` (both directions)                                      | `handlers/acp.ts` + `services/opencode-client.ts` | no conversation; also `abstract`                                             |
 
-The Effect row is the one that has actually been shipped broken — in the sibling
-`codeagent-agent`, which was byte-for-byte this plugin apart from
-`handlers/effects.ts` and its three lines of wiring, and which therefore
-accepted every Skill import and wrote nothing to disk. Read the next section
-before touching anything about Skills.
+## Skills arrive with the session, not through Effects
 
-## Effects are opt-in, and opting out is invisible
+SDK 0.12.0 removed the Effect contract, and this plugin no longer declares the
+`.opencode/skills` Effect Resource or serves `effect/*`. Do not bring them back:
+Ora hands each session its Skills in the ACP `session/new` it sends
+(`additionalDirectories` for an agent that declares them, and
+`_meta["ora/skillDirectories"]`), and the bridge passes that frame through like
+every other. Discovery's probe session is set up the same way with the SDK's
+`skillSessionSetup`.
 
-The Skill directory Ora writes into a Workspace exists **only** because this
-plugin declares it. The chain is short and every link is a hard gate:
+Know what that does not cover yet. OpenCode watches its own Skill sources and
+reloads them, but it does not read what Ora passes as Skills: it takes
+`additionalDirectories` only as read grants (`external_directory` allow rules),
+and `_meta["ora/skillDirectories"]` is Ora's own key, which OpenCode ignores.
+Ora's Skills still reach the model through the `<available_skills>` list Ora
+puts in the prompt, and those grants let OpenCode read them without permission
+prompts. Wiring Ora's Skills into OpenCode's native Skill tool is separate work,
+not done here.
 
-```
-handlers/effects.ts  SKILLS_RESOURCE                    ← the declaration
-main.ts              override readonly effects = …      ← mounted on the instance
-base/agent-plugin.ts defineAgent({ …, effects })        ← handed to the SDK
-SDK agent.ts         if (effects !== undefined) { declareEffectResource(…) }
-SDK plugin.ts        effectResources omitted from ora/register when the list is empty
-```
-
-Miss **any** of those and `ora/register` goes out with no `effectResources`
-field at all. From Ora's side this plugin does not consume Skills, so importing
-one succeeds, Ora has no Target to project it onto, nothing is written to disk,
-and no error is raised, logged, or shown anywhere.
-
-**When a Skill does not appear, check the declaration before debugging
-materialization.** The shipped bundle answers it in one command:
-
-```
-deno task build && grep -c skill dist/main.js
-```
-
-A `0` means the declaration never reached the package.
-
-### What the coordination calls have to promise
-
-Declaring a Resource is also a promise to make its mutation safe, and Ora will
-call all three methods:
-
-- **`coordinate`** must raise the new-turn barrier _before_ it waits for running
-  turns, not after. A check that only latched on an observed idle moment would
-  never find one in a Workspace whose prompts keep arriving; holding first makes
-  the set of turns to drain finite, so the wait terminates. It must also release
-  the barrier before failing — Ora only reactivates Targets whose coordination
-  succeeded, so an abandoned barrier holds its queued prompts for the life of
-  the process. The 10-second drain budget exists because Ora allows a plugin
-  control call 30 seconds and coordination holds that call open; it must finish
-  well inside that rather than wait out a prompt that may legitimately run for
-  minutes.
-- **`reactivate`** respawns the CLI. **OpenCode scans its Skill directories once
-  at startup and never rescans**, so a restart is the only thing that makes an
-  edited tree visible — this is not a precaution, it is the mechanism.
-- **`verify_ready`** reports readiness by **returning**; a Consumer says "not
-  ready" by throwing `-32000`. Returning a payload that says "not ready" would
-  be recorded as ready. The proof this plugin can offer is narrow and worth
-  keeping honest: a CLI that is up and outside a coordination episode has
-  already read what is on disk, and nothing else qualifies.
-- **Both coordination calls must be idempotent.** Ora retries them. The held
-  frame queue is the marker: a repeat `reactivate` finds nothing held — the
-  state a finished reactivation leaves behind — and must not restart a CLI that
-  already rescanned, which would tear down the sessions that came back from the
-  first restart.
-
-`SKILLS_RESOURCE.workspaceRelativePath` is `.opencode/skills`, OpenCode's own
-directory. OpenCode also reads `.claude/skills` and `.agents/skills`, and
-declaring either of those would be a mistake: Ora fully owns what it
-materializes into a declared Resource, so it would reconcile away Skills another
-tool put there.
-
-This repository is itself such a Workspace — `.opencode/skills/` here is
-materialized by Ora, not committed source. Do not hand-edit it.
+An older Ora relied on the Effect Resource to write Skills into the workspace;
+on it this plugin works without Skills. That is why the plugin needs Ora Desktop
+0.7.0 or later, stated in the README and the release notes rather than in
+`orax.toml`.
 
 ## Resolving the CLI on Windows — always include `.bat`
 
@@ -216,8 +168,8 @@ exact `AgentModelApplied`.
   `OPENCODE_DISABLE_PROJECT_CONFIG` because it takes precedence over it.
 - Settings must be empty — this release declares none — and the proxy must be an
   HTTPS URL without credentials, query or fragment.
-- `OpenCodeClient.useRoute` keeps the route for every later start, so an Effect
-  `reactivate` restart runs with the same configuration.
+- `OpenCodeClient.useRoute` keeps the route for every later start, so a restart
+  runs with the same configuration.
 - The same ACP connection could ask the CLI to leave that provider, so on a
   route `services/model-guard.ts` answers these requests itself and the CLI
   never sees them: `authenticate`, `logout`, `auth/*`, `_auth/*`, `providers/*`,
@@ -225,11 +177,11 @@ exact `AgentModelApplied`.
   frozen `ora-model/<id>` (an effort variant of it is allowed). OpenCode 2.0.32
   serves only `authenticate`, as a no-op; the guard is what keeps a later pin
   that serves the rest from becoming a way around the route.
-- Only the frozen model is ever offered. `agent/list_models` answers it without
-  a discovery probe, which would run on the host's own configuration, and every
-  `configOptions` model entry in a result or `config_option_update` is narrowed
-  to it — `enabled_providers` already limits the catalog, but managed settings
-  outrank this plugin's configuration.
+- Only the frozen model is ever offered. `agent/discover` answers it, with no
+  commands, without a discovery probe, which would run on the host's own
+  configuration, and every `configOptions` model entry in a result or
+  `config_option_update` is narrowed to it — `enabled_providers` already limits
+  the catalog, but managed settings outrank this plugin's configuration.
 - Nothing the CLI prints is trusted to keep the route's secrets. Every stdout
   and stderr line has the token and the gateway URL, origin, host and hostname
   replaced with `[redacted]` before it is parsed, forwarded or logged, and every
@@ -246,34 +198,51 @@ terminates process trees, and reclaims whatever a plugin generation left behind
 shim whose real child outlives a kill of the wrapper.
 
 `OpenCodeClient` tracks generations: a process that is no longer `#running` was
-superseded by a later `start()` — an Effect restart, typically — so its exit
-must never clear the new process's tracking or fire `onExited`. The shared
-`#expectedExit` flag reflects the newer generation's intent by then, which is
-why the identity check comes first.
+superseded by a later `start()` — a restart, typically — so its exit must never
+clear the new process's tracking or fire `onExited`. The shared `#expectedExit`
+flag reflects the newer generation's intent by then, which is why the identity
+check comes first.
 
-## Model discovery
+## Discovery
 
-`agent/list_models` receives the workspace `cwd` and answers it by running a
-**separate, one-shot** `opencode acp`, not by borrowing the connection Ora
-holds:
+`agent/discover` receives the workspace `cwd`, whether the caller wants
+commands, Ora's `deadline`, and — when commands are wanted — the Skills a
+session would get. It answers by running a **separate, one-shot**
+`opencode acp`, not by borrowing the connection Ora holds:
 
 - A request injected into Ora's connection returns its answer down Ora's pipe.
 - Ora's own `initialize` declares the client capability that decides whether the
   agent reports a model selector at all, and discovery runs before that.
 
 The probe declares `clientCapabilities: { session: { configOptions: {} } }` —
-without it the agent reports no model selector. Answers are cached per workspace
-for five minutes; a failure is never cached.
+without it the agent reports no model selector. When commands are wanted, it
+watches for the session's first `available_commands_update` **before** sending
+`session/new` (a report may come ahead of the answer) and waits for it with the
+SDK's `waitForAgentCommands`, which also enforces Ora's two-second cap and the
+cleanup reserve. Keep these distinctions:
+
+- No report in time means commands are **unknown**: leave `commands` out. An
+  empty list is a different fact — the agent said it has none.
+- The cache key is the whole input except the deadline: `cwd`,
+  `includeCommands`, and the Skills including `revision`. Keying by `cwd` alone
+  would answer a Skill change with commands from before it.
+- The cache lives in memory only, for five minutes; a failure is never cached,
+  unknown commands are.
+- Only the probe session's own report counts: match it by the `sessionId`
+  `session/new` returned (OpenCode also reports on child sessions), and treat an
+  answer without one as no report.
+- The handshake stops before the cleanup reserve, which `session/delete` uses.
+  Delete is bounded by `min(deadline, now + reserve)` less a kill margin, so a
+  hung delete still leaves time to kill the CLI and answer before the deadline.
 
 Discovery is answered for the Workspace the host named, not for the plugin's
 `#cwd`: `agent/start` gets a neutral directory, and a user can open pickers for
 a project this connection never ran in.
 
 `session/delete` is sent only when `initialize` advertised the capability.
-OpenCode does not, so every probe leaves an empty session behind; the call stays
-in place because the capability is the agent's to add, and sending it
-unconditionally would earn a `method_not_found` on every discovery and clean up
-nothing.
+OpenCode does (`sessionCapabilities.delete`), so every probe deletes its
+session; the gate stays because an agent without the capability would earn a
+`method_not_found` on every discovery and clean up nothing.
 
 ## Protocol hygiene
 
@@ -283,13 +252,10 @@ nothing.
   and takes the plugin down.
 - **ACP payloads are never parsed** on the bridge. Frames are re-framed between
   Ora's binary envelope and the CLI's NDJSON and otherwise passed through
-  verbatim. `handlers/effects.ts` is the one exception, and a deliberately
-  narrow one: it reads `method` and `id` off the envelope to track turns, and
-  never looks at `params`.
+  verbatim.
 - **Throw the right error code.** `AGENT_NOT_INSTALLED` (`-32001`) is retried
   quietly by Ora as expected local configuration; `AGENT_UNUSABLE` (`-32002`) is
-  reported once and not retried; `-32000` is how an Effect Consumer says "not
-  ready right now".
+  reported once and not retried.
 
 ## Releasing
 
@@ -357,11 +323,11 @@ Targets are how a `plugin.log` is read: `plugin` (activation, start/stop,
 deactivation), `host-call` (every `agent/*` method with duration and outcome),
 `lifecycle`, `acp` (frame envelopes only — `method` and `id`, never `params`),
 `opencode-client` (spawn, pid, exit, pipe failures), `opencode-cli` (the live
-CLI's own stderr, one record per line at `info`), `effects` (barrier, drain,
-restart, readiness), `models` and `acp-probe` (discovery; the probe CLI's stderr
-is `opencode-cli.probe` at `debug`), and `command` (which binary was spawned and
-whether it started). ACP payloads are never logged: a `session/prompt` carries
-the user's text, and the log has no business keeping it.
+CLI's own stderr, one record per line at `info`), `discovery` and `acp-probe`
+(discovery; the probe CLI's stderr is `opencode-cli.probe` at `debug`), and
+`command` (which binary was spawned and whether it started). ACP payloads are
+never logged: a `session/prompt` carries the user's text, and the log has no
+business keeping it.
 
 ## Manifest
 

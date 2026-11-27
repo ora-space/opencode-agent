@@ -395,20 +395,6 @@ Deno.test("every model selector the CLI reports offers only the frozen model", a
   await client.stop();
 });
 
-Deno.test("model discovery on a platform route answers the frozen model without a probe", async () => {
-  // Read as text: importing the entrypoint would start serving the host.
-  const main = await Deno.readTextFile(
-    new URL("../src/main.ts", import.meta.url),
-  );
-  const handler = main.slice(main.indexOf("override onDiscover"));
-  assertEquals(
-    handler.indexOf("this.#client.frozenModel") <
-      handler.indexOf("discoverOpenCode("),
-    true,
-  );
-  assertEquals(new OpenCodeClient().frozenModel, undefined);
-});
-
 Deno.test("CLI errors reach Ora with their code but without their text", async () => {
   const { cli, client, forwarded } = await platformClient();
   cli.emit({

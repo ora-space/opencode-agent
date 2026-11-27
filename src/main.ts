@@ -7,7 +7,6 @@ import type {
   HostProcesses,
   JsonValue,
 } from "@ora-space/plugin-sdk";
-import { AGENT_METHODS } from "@ora-space/plugin-sdk";
 import {
   AgentPlugin,
   type PluginContext,
@@ -15,7 +14,7 @@ import {
 } from "./base/agent-plugin.ts";
 import { forwardAcpFrame } from "./handlers/acp.ts";
 import {
-  discoverOpenCode,
+  discoverForRoute,
   invalidateAllOpenCodeDiscovery,
   invalidateOpenCodeDiscovery,
 } from "./handlers/discovery.ts";
@@ -113,23 +112,11 @@ class OpenCodeAgentPlugin extends AgentPlugin {
   override onDiscover = (
     context: AgentDiscoveryContext,
   ): Promise<AgentDiscovery> => {
-    // A platform route offers exactly its frozen model, and no commands: probing would start a CLI
-    // on the host's own configuration and credentials — a run nobody admitted — and list what that
-    // finds.
-    const frozen = this.#client.frozenModel;
-    if (frozen !== undefined) {
-      return Promise.resolve({
-        models: [{ id: frozen.id, displayName: frozen.name, default: true }],
-      });
-    }
-    if (this.#processes === undefined) {
-      throw new Error(
-        `${AGENT_METHODS.discover} was called before activation`,
-      );
-    }
-    // Discovery is answered for the Workspace the host named, not for `#cwd`: `agent/start` gets a
-    // neutral directory, and a user can open pickers for a project this connection never ran in.
-    return discoverOpenCode(this.#processes, context);
+    return discoverForRoute(
+      this.#client.frozenModel,
+      this.#processes,
+      context,
+    );
   };
 
   override onAcp = (frame: JsonValue): Promise<void> | void =>

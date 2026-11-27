@@ -8,6 +8,7 @@ import type {
 } from "@ora-space/plugin-sdk";
 import {
   AGENT_DISCOVERY_CLEANUP_RESERVE_MS,
+  AGENT_METHODS,
   INVALID_PARAMS,
   PluginMethodError,
   skillSessionSetup,
@@ -15,6 +16,7 @@ import {
 } from "@ora-space/plugin-sdk";
 import { AcpProbe, PROBE_BUDGET_MS } from "../services/acp-probe.ts";
 import { spawnOpenCode } from "../services/command.ts";
+import type { FrozenModel } from "../services/model-guard.ts";
 import { logger } from "../services/log.ts";
 
 const log = logger("discovery");
@@ -31,6 +33,14 @@ const ACP_PROTOCOL_VERSION = 1;
  * config — which stays visible the next time the picker is opened.
  */
 const CATALOG_TTL_MS = 5 * 60_000;
+
+/**
+ * How long before the end of the cleanup window `session/delete` stops being waited for.
+ *
+ * Killing the CLI is a host round trip of its own that runs after the delete, and the answer still
+ * has to reach Ora before its deadline; a delete that never answers must not take that time.
+ */
+const KILL_MARGIN_MS = 1_000;
 
 /** One discovery's in-flight or recent answer. */
 interface CachedDiscovery {
@@ -140,6 +150,31 @@ export function discoverOpenCode(
   return discovery;
 }
 
+/**
+ * Serves `agent/discover` for the route this connection runs on.
+ *
+ * A platform route offers exactly its frozen model, and no commands: probing would start a CLI on
+ * the host's own configuration and credentials — a run nobody admitted — and list what that finds.
+ * Otherwise discovery is answered for the Workspace the host named, not for the connection's own
+ * directory: `agent/start` gets a neutral directory, and a user can open pickers for a project
+ * this connection never ran in.
+ */
+export function discoverForRoute(
+  frozen: FrozenModel | undefined,
+  processes: HostProcesses | undefined,
+  context: AgentDiscoveryContext,
+): Promise<AgentDiscovery> {
+  if (frozen !== undefined) {
+    return Promise.resolve({
+      models: [{ id: frozen.id, displayName: frozen.name, default: true }],
+    });
+  }
+  if (processes === undefined) {
+    throw new Error(`${AGENT_METHODS.discover} was called before activation`);
+  }
+  return discoverOpenCode(processes, context);
+}
+
 /** Spells the whole input but the deadline as one key; Skills only matter when commands do. */
 function discoveryKey(context: AgentDiscoveryContext): string {
   const { cwd, includeCommands, skills } = context;
@@ -167,7 +202,8 @@ function discoveryKey(context: AgentDiscoveryContext): string {
  * real one would get, and without MCP servers.
  *
  * The probe session is deleted when OpenCode says it can be, inside the cleanup reserve the
- * handshake and the wait leave, and the process is killed either way.
+ * handshake and the wait leave and ending a kill margin before Ora's deadline, and the process is
+ * killed either way.
  *
  * Failures propagate. Ora treats a failed discovery as a failed discovery rather than a failed
  * agent, so reporting one is cheap and honest, while answering with no models would make a CLI
@@ -194,12 +230,9 @@ async function runProbe(
     ),
   );
   try {
-    // Watched before `session/new` is sent: a report that arrives ahead of its answer counts.
-    const report = includeCommands
-      ? probe.notification(isCommandReport)
-      : undefined;
-    // Ending the probe rejects a report nobody waited for; that is not an error worth surfacing.
-    void report?.catch(() => {});
+    // Recorded before `session/new` is sent: a report that arrives ahead of its answer counts,
+    // though which session it must be about is only known once the answer names it.
+    const reports = includeCommands ? probe.record(isCommandReport) : undefined;
     const initialized = await probe.request("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
       // An agent only reports config options to a client that advertises them, so this one
@@ -216,10 +249,29 @@ async function runProbe(
       ),
     });
     const models = modelsFrom(configOptionsOf(session));
-    const commands = report === undefined
+    const sessionId = readString(session, "sessionId");
+    // Only the probe session's own first report counts; OpenCode also reports on child sessions.
+    // An answer that names no session has no report to wait for.
+    const commands = reports === undefined || sessionId === undefined
       ? undefined
-      : commandsFrom(await waitForAgentCommands(context, report));
-    await deleteProbeSession(probe, initialized, session, context.deadline);
+      : commandsFrom(
+        await waitForAgentCommands(
+          context,
+          reports.first((params) =>
+            readString(params, "sessionId") === sessionId
+          ),
+        ),
+      );
+    await deleteProbeSession(
+      probe,
+      initialized,
+      session,
+      // Never past the reserve, and never so late that the kill and the answer miss Ora's deadline.
+      Math.min(
+        context.deadline,
+        Date.now() + AGENT_DISCOVERY_CLEANUP_RESERVE_MS,
+      ) - KILL_MARGIN_MS,
+    );
     return commands === undefined ? { models } : { models, commands };
   } finally {
     await probe.close();
@@ -277,12 +329,11 @@ function supportsAdditionalDirectories(initialized: JsonValue): boolean {
  * Removes the session the probe created, when the agent supports removing one.
  *
  * Killing the process already ends the session as far as this plugin is concerned, but OpenCode
- * persists its sessions, so every probe leaves an empty conversation in the user's own history.
- * Today OpenCode advertises `close`, `fork`, `list`, and `resume` but not `delete`, which is why
- * this is gated on the capability rather than sent unconditionally: an unsupported call would earn
- * a `method_not_found` on every discovery and clean up nothing. It stays here because the
- * capability is the agent's to add, and best effort — a failure is not a discovery failure, and
- * the answer has already been read.
+ * persists its sessions, so every probe would leave an empty conversation in the user's own
+ * history. OpenCode advertises `sessionCapabilities.delete`, so this runs on every probe; it is
+ * still gated on the capability, since an agent without it would earn a `method_not_found` and
+ * clean up nothing. It is best effort — a failure is not a discovery failure, and the answer has
+ * already been read.
  */
 async function deleteProbeSession(
   probe: AcpProbe,
@@ -295,7 +346,6 @@ async function deleteProbeSession(
     return;
   }
   try {
-    // The cleanup reserve before Ora's deadline is this request's to use.
     await probe.request("session/delete", { sessionId }, deadline);
   } catch (error) {
     log.debug("probe session was not deleted", {

@@ -34,33 +34,17 @@ conversation runs against the OpenCode CLI through its native
 
 ### Host requirement
 
-This plugin needs an Ora that sends the workspace `cwd` with
-`agent/list_models`. Without it there is no directory to discover models for,
-and the plugin answers `-32602` naming the missing parameter rather than probing
-against nothing.
+This plugin needs **Ora Desktop 0.7.0 or later**: the Desktop that hands
+sessions their Skills in `session/new` and asks `agent/discover`. An older
+Desktop still starts the agent and lists its models through `agent/list_models`,
+but has no commands before the first message and — since this plugin no longer
+declares the Skill Effect Resource older Desktops relied on — gives OpenCode no
+Skills. Upgrade Desktop before this plugin.
 
-That requirement is deliberately **not** declared in `orax.toml`, even though
-the schema has the right field for it:
-
-```toml
-[dependencies]
-ora = ">= x.y.z"
-```
-
-Ora parses and validates that table (only `ora` is accepted in it), so it is
-where a host requirement belongs — but the host version carrying the parameter
-does not exist yet. Ora is at 0.1.0 and the parameter is an unreleased change,
-so any number written here today would either be false or vacuous, and a
-requirement no host satisfies would make the plugin uninstallable the moment Ora
-starts enforcing the field. Fill it in once there is a real host version to
-name.
-
-Note that the plugin SDK's version and Ora's are separate lines. This plugin
-builds against SDK 0.10.0; that is not an Ora version. The `package.json` this
-repository used to carry declared `engines.ora >= 0.8.0` — an SDK version in a
-host-version field, in a file no Ora release has ever read —
-`scripts/package.ts` has never staged it into a `.orax`. It has been removed
-rather than corrected.
+The requirement is stated here and in the release notes rather than in
+`orax.toml`: Ora settled on release order and release notes, with no manifest
+field and no marketplace gate, because an older Desktop would not read a new
+field anyway.
 
 ## Installing
 
@@ -143,33 +127,47 @@ package to a separate directory and run:
 deno task simulate --package-root /absolute/extracted-package --cwd /absolute/workspace
 ```
 
-The simulator fails on ACP error responses and covers startup, model discovery,
-Effect coordination/restart/readiness and stop. It does not install the package
-into a user's Ora profile or replace the marketplace version.
+The simulator fails on ACP error responses and covers startup, discovery (models
+and commands), and stop. It does not install the package into a user's Ora
+profile or replace the marketplace version.
 
 ### SDK
 
 The plugin imports `@ora-space/plugin-sdk` from its published JSR package. The
 version is pinned in `deno.json` and resolved by the committed `deno.lock`.
 
-## Model discovery
+## Discovery
 
 OpenCode has no way to list its models outside a session: its real catalog — the
 display names, the grouping, and which model is currently selected — is the
-session configuration the CLI computes from your providers and config file. So
-when Ora asks this plugin for the models available in a workspace, the plugin
-starts a second, throwaway `opencode acp` in that directory, runs `initialize` →
-`session/new` on it, reads the model selector out of the answer, deletes the
-probe session if the CLI says it can, and kills the process.
+session configuration the CLI computes from your providers and config file, and
+it reports its commands only after a session exists. So when Ora asks this
+plugin (`agent/discover`) what a workspace offers, the plugin starts a second,
+throwaway `opencode acp` in that directory, runs `initialize` → `session/new` on
+it, reads the model selector out of the answer, and — when Ora wants commands —
+waits for the session's first command report. It then deletes the probe session
+if the CLI says it can, and kills the process.
+
+- The wait for commands ends at the first report (one that arrives before
+  `session/new` answers counts too), at Ora's cap of two seconds, or where the
+  cleanup reserve before Ora's deadline begins. No report leaves the commands
+  out — unknown — which Ora tells apart from an empty list.
+- The probe session gets the Skills a real session would get and no MCP servers.
+- A models-only question (and every `agent/list_models`) does not wait for
+  commands. On a platform route the frozen model is answered without a probe,
+  and without commands.
 
 It has to be a separate process. The connection Ora holds is one Ora owns both
 ends of: a request injected into it would return its answer down Ora's pipe, and
 the client capabilities Ora declares in its own `initialize` are what decide
 whether OpenCode reports a model selector at all.
 
-Answers are reused for five minutes per workspace, so a picker that re-renders
-does not restart the CLI, while a model that appears after a provider login
-shows up the next time the picker is opened.
+Answers are reused for five minutes, in memory only, for the very same input:
+the workspace, whether commands were wanted and, when they were, the Skills
+including their `revision`, which Ora changes whenever the Skills do. A picker
+that re-renders does not restart the CLI, a model that appears after a provider
+login shows up the next time the picker is opened, and a Skill change is never
+answered with commands from before it.
 
 ## Known limits
 

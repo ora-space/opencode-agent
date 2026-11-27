@@ -250,7 +250,7 @@ async function runProbe(
     });
     const models = modelsFrom(configOptionsOf(session));
     const sessionId = readString(session, "sessionId");
-    // Only the probe session's own first report counts; OpenCode also reports on child sessions.
+    // Only the probe session's own first report counts, whatever else the agent reports on.
     // An answer that names no session has no report to wait for.
     const commands = reports === undefined || sessionId === undefined
       ? undefined

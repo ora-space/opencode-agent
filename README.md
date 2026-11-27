@@ -148,11 +148,15 @@ it, reads the model selector out of the answer, and — when Ora wants commands 
 waits for the session's first command report. It then deletes the probe session
 if the CLI says it can, and kills the process.
 
-- The wait for commands ends at the first report (one that arrives before
-  `session/new` answers counts too), at Ora's cap of two seconds, or where the
-  cleanup reserve before Ora's deadline begins. No report leaves the commands
-  out — unknown — which Ora tells apart from an empty list.
-- The probe session gets the Skills a real session would get and no MCP servers.
+- The wait for commands ends at the probe session's own first report (one that
+  arrives before `session/new` answers counts too; a report about another
+  session does not), at Ora's cap of two seconds, or where the cleanup reserve
+  before Ora's deadline begins. No report leaves the commands out — unknown —
+  which Ora tells apart from an empty list.
+- The probe uses the same Skill input as a session, and no MCP servers.
+- Deleting the probe session gets at most the cleanup reserve, ending a second
+  before Ora's deadline: a CLI that never answers the delete is still killed,
+  and the models and commands already read are still returned in time.
 - A models-only question (and every `agent/list_models`) does not wait for
   commands. On a platform route the frozen model is answered without a probe,
   and without commands.

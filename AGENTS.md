@@ -31,11 +31,14 @@ Ora hands each session its Skills in the ACP `session/new` it sends
 every other. Discovery's probe session is set up the same way with the SDK's
 `skillSessionSetup`.
 
-Know what that does not cover yet. The Effect restart existed because **OpenCode
-scans its Skill directories once at startup and never rescans**; `_meta` is
-Ora's own key, which OpenCode does not read. Wiring OpenCode's native Skill
-mechanism to what Ora passes is optional follow-up work, not done here, so check
-whether a running OpenCode sees a Skill before assuming it does.
+Know what that does not cover yet. OpenCode watches its own Skill sources and
+reloads them, but it does not read what Ora passes as Skills: it takes
+`additionalDirectories` only as read grants (`external_directory` allow rules),
+and `_meta["ora/skillDirectories"]` is Ora's own key, which OpenCode ignores.
+Ora's Skills still reach the model through the `<available_skills>` list Ora
+puts in the prompt, and those grants let OpenCode read them without permission
+prompts. Wiring Ora's Skills into OpenCode's native Skill tool is separate work,
+not done here.
 
 An older Ora relied on the Effect Resource to write Skills into the workspace;
 on it this plugin works without Skills. That is why the plugin needs Ora Desktop
@@ -225,17 +228,21 @@ cleanup reserve. Keep these distinctions:
   would answer a Skill change with commands from before it.
 - The cache lives in memory only, for five minutes; a failure is never cached,
   unknown commands are.
+- Only the probe session's own report counts: match it by the `sessionId`
+  `session/new` returned (OpenCode also reports on child sessions), and treat an
+  answer without one as no report.
 - The handshake stops before the cleanup reserve, which `session/delete` uses.
+  Delete is bounded by `min(deadline, now + reserve)` less a kill margin, so a
+  hung delete still leaves time to kill the CLI and answer before the deadline.
 
 Discovery is answered for the Workspace the host named, not for the plugin's
 `#cwd`: `agent/start` gets a neutral directory, and a user can open pickers for
 a project this connection never ran in.
 
 `session/delete` is sent only when `initialize` advertised the capability.
-OpenCode does not, so every probe leaves an empty session behind; the call stays
-in place because the capability is the agent's to add, and sending it
-unconditionally would earn a `method_not_found` on every discovery and clean up
-nothing.
+OpenCode does (`sessionCapabilities.delete`), so every probe deletes its
+session; the gate stays because an agent without the capability would earn a
+`method_not_found` on every discovery and clean up nothing.
 
 ## Protocol hygiene
 

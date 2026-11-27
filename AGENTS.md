@@ -229,8 +229,10 @@ cleanup reserve. Keep these distinctions:
 - The cache lives in memory only, for five minutes; a failure is never cached,
   unknown commands are.
 - Only the probe session's own report counts: match it by the `sessionId`
-  `session/new` returned (OpenCode also reports on child sessions), and treat an
-  answer without one as no report.
+  `session/new` returned, and treat an answer without one as no report.
+  (OpenCode reports on child sessions only to a client that declares
+  `opencode/child-session-updates`, which the probe does not; the match is the
+  contract either way.)
 - The handshake stops before the cleanup reserve, which `session/delete` uses.
   Delete is bounded by `min(deadline, now + reserve)` less a kill margin, so a
   hung delete still leaves time to kill the CLI and answer before the deadline.

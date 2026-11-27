@@ -410,13 +410,14 @@ const register = await waitFor(
 );
 console.log(`ok: register ${JSON.stringify(register.params)}`);
 
-const effectResources =
-  (register.params as { effectResources?: unknown[] } | undefined)
-    ?.effectResources ?? [];
-if (effectResources.length === 0) {
-  throw new Error("registration did not declare any Effect Resource");
+// SDK 0.12.0 removed Effects: Ora hands sessions their Skills in `session/new` instead.
+if (
+  (register.params as { effectResources?: unknown } | undefined)
+    ?.effectResources !== undefined
+) {
+  throw new Error("registration still declares Effect Resources");
 }
-console.log(`ok: effectResources ${JSON.stringify(effectResources)}`);
+console.log("ok: no effectResources declared");
 
 await send({
   jsonrpc: "2.0",
@@ -486,139 +487,43 @@ console.log(
 
 // Discovery names the Workspace it is answering for, and the plugin answers it by running a
 // second, one-shot `opencode acp` through this simulator rather than by borrowing the connection
-// opened above — so this step also proves the live bridge survives a probe running beside it.
+// opened above — so this step also proves the live bridge survives a probe running beside it. It
+// asks for commands too, the way a chat surface does, with no Skills.
 await send({
   jsonrpc: "2.0",
   id: 2,
-  method: "agent/list_models",
-  params: { cwd: workspace },
+  method: "agent/discover",
+  params: {
+    cwd: workspace,
+    includeCommands: true,
+    deadline: Date.now() + 60_000,
+    skills: { readRoots: [], directories: [], revision: "0" },
+  },
 });
-const models = await waitFor(
+const discovered = await waitFor(
   (message) => message.id === 2,
-  "agent/list_models",
+  "agent/discover",
 );
-if (models.error !== undefined) {
-  throw new Error(`agent/list_models failed: ${JSON.stringify(models.error)}`);
+if (discovered.error !== undefined) {
+  throw new Error(`agent/discover failed: ${JSON.stringify(discovered.error)}`);
 }
-const modelList = ((models.result ?? {}) as { models?: unknown[] }).models ??
-  [];
-console.log(
-  `ok: listModels ${modelList.length} models, first ${
-    JSON.stringify(modelList[0])
-  }`,
-);
-
-// Ora addresses coordination by Target and Resource identity; the plugin never resolves a path
-// from these, so any stable pair drives the same code the host would.
-const coordinationParams = {
-  targetId: "sim-target",
-  resourceIds: ["sim-resource"],
+const discovery = (discovered.result ?? {}) as {
+  models?: unknown[];
+  commands?: unknown[];
 };
-
-await send({
-  jsonrpc: "2.0",
-  id: 3,
-  method: "effect/coordinate",
-  params: coordinationParams,
-});
-const coordinated = await waitFor(
-  (message) => message.id === 3,
-  "effect/coordinate",
-);
-if (coordinated.error !== undefined) {
-  throw new Error(
-    `effect/coordinate failed: ${JSON.stringify(coordinated.error)}`,
-  );
-}
-console.log("ok: effect/coordinate (no turn in flight) -> safe to mutate");
-
-// Readiness must be refused while the barrier is up: the CLI has not rescanned yet, and Ora would
-// otherwise mark a Target ready against Skills its Consumer has never read.
-await send({
-  jsonrpc: "2.0",
-  id: 4,
-  method: "effect/verify_ready",
-  params: {
-    targetId: coordinationParams.targetId,
-    generation: 1,
-    consumerRevisionId: "sim-revision",
-    projectionDigest: "sim-digest",
-  },
-});
-const readyWhileQuiesced = await waitFor(
-  (message) => message.id === 4,
-  "effect/verify_ready while quiesced",
-);
-if (readyWhileQuiesced.error === undefined) {
-  throw new Error("effect/verify_ready reported ready while still quiesced");
-}
-console.log("ok: effect/verify_ready while quiesced -> refused");
-
-await send({
-  jsonrpc: "2.0",
-  id: 5,
-  method: "effect/reactivate",
-  params: coordinationParams,
-});
-const reactivated = await waitFor(
-  (message) => message.id === 5,
-  "effect/reactivate",
-);
-if (reactivated.error !== undefined) {
-  throw new Error(
-    `effect/reactivate failed: ${JSON.stringify(reactivated.error)}`,
-  );
-}
-console.log("ok: effect/reactivate (CLI respawned)");
-
-await send({
-  jsonrpc: "2.0",
-  id: 6,
-  method: "effect/verify_ready",
-  params: {
-    targetId: coordinationParams.targetId,
-    generation: 1,
-    consumerRevisionId: "sim-revision",
-    projectionDigest: "sim-digest",
-  },
-});
-const ready = await waitFor(
-  (message) => message.id === 6,
-  "effect/verify_ready",
-);
-if (ready.error !== undefined) {
-  throw new Error(`effect/verify_ready failed: ${JSON.stringify(ready.error)}`);
-}
-console.log("ok: effect/verify_ready after reactivate -> ready");
-
-// The barrier must release a fully working bridge: prove the respawned CLI still answers ACP.
-await send({
-  jsonrpc: "2.0",
-  method: "agent/acp",
-  params: {
-    jsonrpc: "2.0",
-    id: 3,
-    method: "session/new",
-    params: { cwd: workspace, mcpServers: [] },
-  },
-});
-const sessionAfterRestart = await waitFor(
-  (message) => message.method === "agent/acp" && acpFrame(message).id === 3,
-  "ACP session/new after restart",
-);
-if (acpFrame(sessionAfterRestart).error) {
-  throw new Error(
-    `session/new after restart: ${
-      JSON.stringify(acpFrame(sessionAfterRestart).error)
-    }`,
-  );
-}
+const modelList = discovery.models ?? [];
+// Absent commands mean the CLI sent no report in time; an empty list means it said it has none.
 console.log(
-  `ok: session/new after restart ${
-    JSON.stringify(
-      acpFrame(sessionAfterRestart).result ??
-        acpFrame(sessionAfterRestart).error,
-    ).slice(0, 200)
+  `ok: discover ${modelList.length} models, first ${
+    JSON.stringify(modelList[0])
+  }; commands ${
+    discovery.commands === undefined
+      ? "unknown (no report in time)"
+      : JSON.stringify(
+        discovery.commands.map((command) =>
+          (command as { name?: unknown }).name
+        ),
+      )
   }`,
 );
 

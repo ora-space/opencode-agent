@@ -400,10 +400,10 @@ Deno.test("model discovery on a platform route answers the frozen model without 
   const main = await Deno.readTextFile(
     new URL("../src/main.ts", import.meta.url),
   );
-  const handler = main.slice(main.indexOf("override onListModels"));
+  const handler = main.slice(main.indexOf("override onDiscover"));
   assertEquals(
     handler.indexOf("this.#client.frozenModel") <
-      handler.indexOf("listOpenCodeModels("),
+      handler.indexOf("discoverOpenCode("),
     true,
   );
   assertEquals(new OpenCodeClient().frozenModel, undefined);
